@@ -87,6 +87,55 @@ $InstallStageProtocolVersion = 1
 
 # ============================================================================
 # Helper functions
+
+# Return the real OS processor architecture as a lowercase string suitable for
+# Node.js / electron download URL slugs: "arm64", "x64", or "x86".
+#
+# Why not just trust [Environment]::Is64BitOperatingSystem or
+# [RuntimeInformation]::OSArchitecture?  On Windows on ARM, when this script
+# is invoked from Windows PowerShell 5.1 (the default `powershell.exe`) or
+# any x64 PowerShell host, the process runs under Prism x64 emulation and
+# BOTH of those APIs report `X64` -- they describe the emulated view, not
+# the real OS.  We've seen this concretely on Snapdragon X1 hardware: an
+# ARM64-based Surface Laptop returns OSArchitecture=X64 from an emulated
+# PowerShell session.
+#
+# Win32_Processor.Architecture is invariant to emulation.  Values:
+#   0=x86, 5=ARM, 9=AMD64/x64, 12=ARM64.  We fall back to
+#   PROCESSOR_ARCHITEW6432 (set on WoW64 with the real OS arch) and then
+#   PROCESSOR_ARCHITECTURE so we still produce a sensible answer if CIM
+#   isn't available (locked-down WMI, container, etc.).
+function Get-WindowsArch {
+    try {
+        $proc = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
+            Select-Object -First 1
+        switch ([int]$proc.Architecture) {
+            12 { return "arm64" }
+            9  { return "x64" }
+            0  { return "x86" }
+            5  { return "arm" }
+        }
+    } catch {
+        # CIM unavailable -- fall through to env-var path
+    }
+
+    $envArch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($envArch) {
+        "ARM64" { return "arm64" }
+        "AMD64" { return "x64" }
+        "x86"   { return "x86" }
+        default {
+            # Last-resort: respect 64-bitness so we don't ship a 32-bit
+            # toolchain to anyone.
+            if ([Environment]::Is64BitOperatingSystem) { return "x64" } else { return "x86" }
+        }
+    }
+}
+
 # ============================================================================
 
 function Write-Banner {
@@ -525,32 +574,30 @@ function Install-Git {
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) {
-            # Detect ARM64 vs x64 explicitly; PortableGit ships separate assets.
-            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
-                "arm64"
-            } else {
-                "64-bit"
-            }
+        $arch = Get-WindowsArch
+        if ($arch -eq 'arm64') {
+            $assetTag = 'arm64'
+            $downloadIsZip = $false
+        } elseif ($arch -eq 'x64') {
+            $assetTag = '64-bit'
+            $downloadIsZip = $false
         } else {
-            # PortableGit does not ship a 32-bit build -- fall back to MinGit 32-bit
-            # with a warning that bash-based features will be unavailable.
-            "32-bit-mingit"
+            # PortableGit does not ship 32-bit / arm builds -- fall back to MinGit
+            # 32-bit with a warning that bash-based features will be unavailable.
+            $assetTag = '32-bit-mingit'
+            $downloadIsZip = $true
         }
 
         $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
         $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
 
-        if ($arch -eq "32-bit-mingit") {
-            Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
+        if ($assetTag -eq "32-bit-mingit") {
+            Write-Warn "32-bit / non-x64-non-arm64 Windows detected -- PortableGit unavailable.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
             $assetPattern = "MinGit-*-32-bit.zip"
-            $downloadIsZip = $true
-        } elseif ($arch -eq "arm64") {
+        } elseif ($assetTag -eq "arm64") {
             $assetPattern = "PortableGit-*-arm64.7z.exe"
-            $downloadIsZip = $false
         } else {
             $assetPattern = "PortableGit-*-64-bit.7z.exe"
-            $downloadIsZip = $false
         }
 
         $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
@@ -719,7 +766,7 @@ function Test-Node {
     Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $arch = Get-WindowsArch
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
@@ -781,7 +828,19 @@ function Test-Node {
             # check the post-condition.  See the long comment in Install-Uv
             # for the same pattern.
             $ErrorActionPreference = "Continue"
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # On ARM64, force winget to fetch the ARM64 installer.  Without
+            # the explicit override, winget on WoW64 sometimes still resolves
+            # to x64 manifests, leaving us with an emulated Node toolchain
+            # even after a "successful" install.  The OpenJS manifest does
+            # publish an arm64 installer, so this is safe.
+            $wingetArgs = @(
+                'install','OpenJS.NodeJS.LTS','--silent',
+                '--accept-package-agreements','--accept-source-agreements'
+            )
+            if ((Get-WindowsArch) -eq 'arm64') {
+                $wingetArgs += @('--architecture','arm64')
+            }
+            winget @wingetArgs 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
