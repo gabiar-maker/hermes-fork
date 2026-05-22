@@ -1,5 +1,5 @@
 import type { ComponentProps, CSSProperties } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useRef, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
@@ -22,8 +22,15 @@ interface FadeTextProps extends Omit<ComponentProps<'span'>, 'children'> {
  * background is — no need to know the surface color, no after-pseudo overlap.
  * The mask is only applied when the text is actually overflowing, so short
  * strings render as plain text without an unnecessary gradient on their tail.
+ *
+ * Layout reads (`el.scrollWidth`) are forced reflows. To avoid measuring
+ * once per parent re-render — which during streaming happens on every token —
+ * we only re-measure when the ResizeObserver fires (real size changes), not
+ * on every `children` reference change. Wrapped in `memo` with a custom
+ * comparator so scalar-string children skip re-render entirely when the text
+ * is unchanged but the parent re-rendered.
  */
-export function FadeText({ children, className, fadeWidth = '3rem', style, ...rest }: FadeTextProps) {
+function FadeTextImpl({ children, className, fadeWidth = '3rem', style, ...rest }: FadeTextProps) {
   const ref = useRef<HTMLSpanElement>(null)
   const [overflowing, setOverflowing] = useState(false)
 
@@ -38,10 +45,6 @@ export function FadeText({ children, className, fadeWidth = '3rem', style, ...re
   }, [])
 
   useResizeObserver(measureOverflow, ref)
-
-  useEffect(() => {
-    measureOverflow()
-  }, [children, measureOverflow])
 
   const maskStyle: CSSProperties = overflowing
     ? {
@@ -62,3 +65,46 @@ export function FadeText({ children, className, fadeWidth = '3rem', style, ...re
     </span>
   )
 }
+
+function styleEqual(a: CSSProperties | undefined, b: CSSProperties | undefined) {
+  if (a === b) {
+    return true
+  }
+
+  if (!a || !b) {
+    return false
+  }
+
+  const aKeys = Object.keys(a)
+
+  if (aKeys.length !== Object.keys(b).length) {
+    return false
+  }
+
+  for (const k of aKeys) {
+    if ((a as Record<string, unknown>)[k] !== (b as Record<string, unknown>)[k]) {
+      return false
+    }
+  }
+
+  return true
+}
+
+export const FadeText = memo(FadeTextImpl, (prev, next) => {
+  if (prev.className !== next.className) {
+    return false
+  }
+
+  if (prev.fadeWidth !== next.fadeWidth) {
+    return false
+  }
+
+  if (!styleEqual(prev.style, next.style)) {
+    return false
+  }
+
+  // Cheap path: the common case is a scalar string/number child. Identity
+  // comparison is correct for any other element type (a new JSX node should
+  // force a re-render).
+  return prev.children === next.children
+})
