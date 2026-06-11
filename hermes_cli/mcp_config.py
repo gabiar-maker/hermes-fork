@@ -825,6 +825,49 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+# ─── hermes mcp probe ─────────────────────────────────────────────────────────
+
+def cmd_mcp_probe(args):
+    """Probe an ad-hoc MCP URL non-interactively and print ``{tools:[…]}`` JSON.
+
+    Read-only discovery (``tools/list`` only, never ``tools/call``). Builds a
+    throwaway server config, reuses :func:`_probe_single_server` for the shared
+    MCP transport, and persists NOTHING (no ``config.yaml`` write). stdout is
+    JSON and nothing else, for machine consumption by the fleet daemon;
+    diagnostics go to stderr and secrets (url/headers) are never echoed.
+    """
+    import json
+    import sys
+
+    url = getattr(args, "url", None)
+    if not url:
+        print("error: --url is required", file=sys.stderr)
+        sys.exit(2)
+
+    # Parse repeated --header "Name: Value" into a headers dict.
+    headers: Dict[str, str] = {}
+    for raw in getattr(args, "header", None) or []:
+        if ":" not in raw:
+            print("error: invalid --header (expected 'Name: Value')", file=sys.stderr)
+            sys.exit(2)
+        k, v = raw.split(":", 1)
+        headers[k.strip()] = v.strip()
+
+    # Ad-hoc server config — NOT persisted anywhere.
+    server_config: Dict[str, Any] = {"url": url}
+    if headers:
+        server_config["headers"] = headers
+
+    try:
+        tools = _probe_single_server("__probe__", server_config)
+    except Exception as exc:  # scrub: never echo url/header
+        print(f"error: probe failed: {type(exc).__name__}", file=sys.stderr)
+        sys.exit(1)
+
+    payload = {"tools": [{"name": n, "description": d or ""} for (n, d) in tools]}
+    print(json.dumps(payload))
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -864,6 +907,7 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
+        "probe": cmd_mcp_probe,
     }
 
     handler = handlers.get(action)
