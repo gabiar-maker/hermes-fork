@@ -82,6 +82,22 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    # Non-interactive, read-only discovery: connect to an ad-hoc URL, list its
+    # tools, print JSON on stdout, save nothing. The fleet daemon runs this with
+    # fixed args + a timeout to map a customer's MCP without portal access.
+    mcp_probe_p = mcp_sub.add_parser(
+        "probe",
+        help="Probe an MCP URL and print its tools as JSON (read-only, no save)",
+    )
+    mcp_probe_p.add_argument("--url", required=True, help="MCP server URL to probe")
+    mcp_probe_p.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME: VALUE",
+        help="HTTP header (repeatable), e.g. 'Authorization: Bearer <key>'",
+    )
+
     # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
     mcp_sub.add_parser(
         "picker",
