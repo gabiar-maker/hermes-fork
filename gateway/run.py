@@ -6134,7 +6134,11 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        # API server events are gated upstream by the API key (_check_auth); the
+        # only API_SERVER messages that reach this loop are the synthetic /goal
+        # arming + continuation turns of a Jean-Billie managed mission, so they
+        # carry no user allowlist and are authorized by the API-key boundary.
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.API_SERVER}:
             return True
 
         user_id = source.user_id
@@ -9400,6 +9404,25 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         except Exception:
             return 20
 
+    def _goal_anchor_for_source(self, source: Any) -> Optional[str]:
+        """Stable goal key for a managed-mission source, independent of the rotating session_id.
+
+        Jean-Billie arms background missions via POST /v1/message (API server) with a stable
+        ``conversationId`` carried as ``source.chat_id``. Compression rotates a session's ``session_id``
+        mid-mission (agent/conversation_compression.py), which would orphan a goal keyed by session_id.
+        Anchoring API_SERVER goals to their conversationId keeps ``goal:<conversationId>`` reachable across
+        rotation and readable by GET /v1/goals. Returns ``None`` for every other platform (Telegram/CLI/…) so
+        their goals stay keyed by session_id exactly as before.
+        """
+        try:
+            if source is not None and getattr(source, "platform", None) == Platform.API_SERVER:
+                cid = getattr(source, "chat_id", None)
+                if cid:
+                    return str(cid)
+        except Exception:
+            pass
+        return None
+
     def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
 
@@ -9416,7 +9439,8 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
             return None, None
-        sid = getattr(session_entry, "session_id", None) or ""
+        # Managed missions anchor on conversationId (stable across compression); others key by session_id.
+        sid = self._goal_anchor_for_source(event.source) or (getattr(session_entry, "session_id", None) or "")
         if not sid:
             return None, None
         max_turns = self._goal_max_turns_from_config()
@@ -9509,7 +9533,9 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             logger.debug("goal continuation: goals module unavailable: %s", exc)
             return
 
-        sid = getattr(session_entry, "session_id", None) or ""
+        # Managed missions anchor on conversationId so the goal survives the session_id rotation that
+        # compression triggers mid-mission; other platforms resolve by session_id exactly as before.
+        sid = self._goal_anchor_for_source(source) or (getattr(session_entry, "session_id", None) or "")
         if not sid:
             return
 

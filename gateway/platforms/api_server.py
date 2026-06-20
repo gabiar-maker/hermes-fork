@@ -55,6 +55,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
 )
@@ -1417,6 +1419,77 @@ class APIServerAdapter(BasePlatformAdapter):
                 "createdAt": g.get("created_at"),
             })
         return web.json_response({"object": "list", "data": data})
+
+    async def _handle_arm_message(self, request: "web.Request") -> "web.Response":
+        """POST /v1/message — arm a Jean-Billie managed background mission (goal) and let it run autonomously.
+
+        Jean-Billie managed surface: the control daemon proxies this loopback endpoint over mTLS. The portal
+        posts ``{text, conversationId}`` where ``conversationId`` is the stable mission handle (e.g.
+        ``mission:<uuid>``). We inject a synthetic ``/goal <text>`` message into the gateway loop via the base
+        adapter's ``handle_message`` (spawns a background task → fast 202): this arms the goal under the key
+        ``goal:<conversationId>`` and the per-turn continuation hook keeps it progressing until the goal judge
+        says done or ``goals.max_turns`` is reached. The goal is anchored to ``conversationId`` (see
+        ``_goal_anchor_for_source`` in gateway/run.py) so it survives the session-id rotation that compression
+        triggers. Outbound tool calls during the mission still flow through ``jb_outbound`` (proposals — nothing
+        is sent without approval). Fire-and-forget: returns ``202 {goalId}``; live state is read via GET /v1/goals.
+
+        Idempotent: a second POST for a conversation whose goal is already active returns 202 with the same
+        goalId WITHOUT re-arming, so a retried/duplicate call never restarts an in-flight mission.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = body.get("text")
+        conversation_id = body.get("conversationId")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing or invalid 'text' field"), status=400)
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return web.json_response(_openai_error("Missing or invalid 'conversationId' field"), status=400)
+        text = text.strip()
+        conversation_id = conversation_id.strip()
+
+        # Idempotent re-arm: if a goal is already active for this conversation, do not re-arm — return the
+        # existing goalId so a retried/duplicate POST never restarts an in-flight mission (budget/progress kept).
+        try:
+            from hermes_cli.goals import GoalManager
+            if GoalManager(session_id=conversation_id).is_active():
+                return web.json_response({"goalId": conversation_id, "status": "already_active"}, status=202)
+        except Exception as exc:
+            logger.debug("arm message: active-goal pre-check failed: %s", exc)
+
+        # Deterministic API_SERVER source → stable gateway session key across the kickoff turn and every
+        # continuation turn (same SessionEntry reused). The goal is keyed by conversationId via the anchor,
+        # independent of the session_id that compression rotates.
+        from gateway.session import SessionSource
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=conversation_id,
+            chat_name="Jean-Billie mission",
+            chat_type="dm",
+            user_id="jb-managed",
+            user_name="Jean-Billie",
+        )
+        event = MessageEvent(
+            text=f"/goal {text}",
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+
+        # Route through the base adapter loop: spawns a background task (arm via /goal + kickoff turn, then the
+        # post-turn continuation hook re-enqueues and drains until done/paused). handle_message returns fast.
+        try:
+            await self.handle_message(event)
+        except Exception as exc:
+            logger.error("arm message: failed to arm mission %s: %s", conversation_id, exc, exc_info=True)
+            return web.json_response(_openai_error("Failed to arm mission", code="arm_failed"), status=502)
+
+        return web.json_response({"goalId": conversation_id, "status": "armed"}, status=202)
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
@@ -4203,8 +4276,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
-            # Jean-Billie managed background missions: read-only goal-state surface (proxied over mTLS
-            # by the control daemon for the client portal). See _handle_goals_list.
+            # Jean-Billie managed background missions: arm a mission (POST) + read-only goal-state surface
+            # (GET), both proxied over mTLS by the control daemon for the client portal.
+            # See _handle_arm_message and _handle_goals_list.
+            self._app.router.add_post("/v1/message", self._handle_arm_message)
             self._app.router.add_get("/v1/goals", self._handle_goals_list)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
