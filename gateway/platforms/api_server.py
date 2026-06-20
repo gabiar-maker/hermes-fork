@@ -1382,6 +1382,42 @@ class APIServerAdapter(BasePlatformAdapter):
             "has_more": len(sessions) == limit,
         })
 
+    async def _handle_goals_list(self, request: "web.Request") -> "web.Response":
+        """GET /v1/goals — list background-mission (goal) states from ``state_meta`` (read-only).
+
+        Jean-Billie managed surface: the control daemon proxies this loopback endpoint over mTLS so the
+        client portal can show a mission's live progress. Returns a SAFE subset of each ``GoalState``;
+        ``goalId`` is the ``state_meta`` key without the ``goal:`` prefix (e.g. ``mission:<uuid>``).
+        Read-only — never mutates goal state.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        data = []
+        for key, value in db.list_meta_prefix("goal:"):
+            try:
+                g = json.loads(value) if value else {}
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(g, dict):
+                continue
+            data.append({
+                "goalId": key[len("goal:"):],
+                "goal": g.get("goal"),
+                "status": g.get("status"),
+                "turnsUsed": g.get("turns_used"),
+                "maxTurns": g.get("max_turns"),
+                "pausedReason": g.get("paused_reason"),
+                "lastVerdict": g.get("last_verdict"),
+                "createdAt": g.get("created_at"),
+            })
+        return web.json_response({"object": "list", "data": data})
+
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
         auth_err = self._check_auth(request)
@@ -4167,6 +4203,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            # Jean-Billie managed background missions: read-only goal-state surface (proxied over mTLS
+            # by the control daemon for the client portal). See _handle_goals_list.
+            self._app.router.add_get("/v1/goals", self._handle_goals_list)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
