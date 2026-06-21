@@ -1491,6 +1491,77 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"goalId": conversation_id, "status": "armed"}, status=202)
 
+    async def _handle_watchdog_tick(self, request: "web.Request") -> "web.Response":
+        """POST /v1/watchdog-tick — re-drive stuck managed missions (empty body).
+
+        Jean-Billie managed surface: the control daemon pokes this loopback endpoint on a timer
+        (cron). The FORK does the smart sweep itself — it enumerates every ``goal:<conversationId>``
+        row, and for each ``active`` goal that is STALE (no turn ran recently), still under budget,
+        and not already in flight, re-drives ONE continuation turn so a stalled mission resumes.
+        Never touches paused/done/cleared goals. Thin handler: the sweep logic (and the re-drive
+        seam) live in the gateway's ``_watchdog_sweep`` — see gateway/run.py for the design.
+
+        Response ``200 {"scanned": <int>, "kicked": [conversationId, ...]}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        # Reach the GatewayRunner through the installed message handler (a bound
+        # GatewayRunner._handle_message), the same instance handle_message drives.
+        runner = getattr(self._message_handler, "__self__", None)
+        sweep = getattr(runner, "_watchdog_sweep", None)
+        if sweep is None:
+            return web.json_response(_openai_error("Watchdog unavailable", code="watchdog_unavailable"), status=503)
+
+        try:
+            result = await sweep()
+        except Exception as exc:
+            logger.error("watchdog tick: sweep failed: %s", exc, exc_info=True)
+            return web.json_response(_openai_error("Watchdog sweep failed", code="watchdog_failed"), status=502)
+
+        return web.json_response({
+            "scanned": int(result.get("scanned", 0)),
+            "kicked": list(result.get("kicked", [])),
+        })
+
+    async def _handle_clear(self, request: "web.Request") -> "web.Response":
+        """POST /v1/clear — stop a managed background mission (idempotent).
+
+        Jean-Billie managed surface: the portal asks to stop a mission; the control daemon proxies
+        this loopback endpoint. Body ``{"conversationId": "mission:<uuid>"}``. Marks the goal cleared
+        (``status=cleared``, preserved for audit) so the post-turn continuation hook and the watchdog
+        both stop driving it. Idempotent: clearing an already-absent goal still returns 200.
+
+        Response ``200 {"goalId": conversationId, "status": "cleared"|"absent"}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        conversation_id = body.get("conversationId")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return web.json_response(_openai_error("Missing or invalid 'conversationId' field"), status=400)
+        conversation_id = conversation_id.strip()
+
+        try:
+            from hermes_cli.goals import clear_goal, load_goal
+            existed = load_goal(conversation_id) is not None
+            clear_goal(conversation_id)
+        except Exception as exc:
+            logger.error("clear: failed to clear mission %s: %s", conversation_id, exc, exc_info=True)
+            return web.json_response(_openai_error("Failed to clear mission", code="clear_failed"), status=502)
+
+        return web.json_response({
+            "goalId": conversation_id,
+            "status": "cleared" if existed else "absent",
+        })
+
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
         auth_err = self._check_auth(request)
@@ -4277,10 +4348,13 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             # Jean-Billie managed background missions: arm a mission (POST) + read-only goal-state surface
-            # (GET), both proxied over mTLS by the control daemon for the client portal.
-            # See _handle_arm_message and _handle_goals_list.
+            # (GET) + watchdog re-drive (POST) + stop a mission (POST), all proxied over mTLS by the
+            # control daemon for the client portal. See _handle_arm_message / _handle_goals_list /
+            # _handle_watchdog_tick / _handle_clear.
             self._app.router.add_post("/v1/message", self._handle_arm_message)
             self._app.router.add_get("/v1/goals", self._handle_goals_list)
+            self._app.router.add_post("/v1/watchdog-tick", self._handle_watchdog_tick)
+            self._app.router.add_post("/v1/clear", self._handle_clear)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)

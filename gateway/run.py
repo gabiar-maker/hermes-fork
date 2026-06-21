@@ -65,6 +65,12 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Managed-mission watchdog: a goal whose last turn finished more than this many
+# seconds ago is STALE and gets one continuation turn re-driven on the next
+# POST /v1/watchdog-tick. Default 15 min — far above a normal turn so the sweep
+# never double-drives a mission that is merely mid-turn. Override via config
+# ``goals.watchdog_stale_seconds`` (see _watchdog_stale_seconds_from_config).
+WATCHDOG_STALE_SECONDS_DEFAULT = 900
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -9445,6 +9451,169 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    def _watchdog_stale_seconds_from_config(self) -> int:
+        """Resolve ``goals.watchdog_stale_seconds`` (override for the module default).
+
+        Mirrors ``_goal_max_turns_from_config``: GatewayRunner.config is a
+        GatewayConfig dataclass, so the top-level ``goals`` block is only
+        reachable through hermes_cli.config.load_config(). A non-positive or
+        unreadable value falls back to ``WATCHDOG_STALE_SECONDS_DEFAULT``.
+        """
+        try:
+            goals_cfg = (
+                (self.config or {}).get("goals", {})
+                if isinstance(self.config, dict)
+                else getattr(self.config, "goals", {}) or {}
+            )
+            if not goals_cfg:
+                from hermes_cli.config import load_config
+
+                goals_cfg = (load_config() or {}).get("goals") or {}
+            value = int(goals_cfg.get("watchdog_stale_seconds", WATCHDOG_STALE_SECONDS_DEFAULT) or 0)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+        return WATCHDOG_STALE_SECONDS_DEFAULT
+
+    async def _watchdog_sweep(self) -> Dict[str, Any]:
+        """Re-drive stuck managed missions (POST /v1/watchdog-tick).
+
+        Jean-Billie managed surface: a background mission's continuation chain
+        can stall — the agent's last turn finished without the post-turn
+        continuation hook re-enqueueing (process restart, a dropped/awaited
+        callback, an unhandled error mid-turn). Such a goal has NO turn in
+        flight and NO inbound event, so nothing will ever advance it. This
+        sweep finds those goals and gives each ONE continuation turn.
+
+        Sweep contract (locked):
+          * Enumerate every ``goal:<conversationId>`` row via the SAME SessionDB
+            the GoalManager writes (``goals._get_session_db``), so we read the
+            store the missions actually persist to.
+          * Re-drive only goals that are ``active`` AND stale
+            (``now - last_turn_at > stale_seconds``) AND under budget
+            (``turns_used < max_turns``) AND not already in flight.
+          * NEVER touch ``paused`` / ``done`` / ``cleared`` goals.
+          * Respect ``max_turns`` — each kick consumes a turn (the judge in the
+            re-driven turn increments ``turns_used`` exactly as a normal
+            continuation does), so the budget is the natural runaway cap.
+
+        Re-drive seam — WHY ``handle_message`` and not ``_enqueue_fifo``:
+        ``_enqueue_fifo`` only parks an event in the adapter's
+        ``_pending_messages`` slot/overflow; that slot is only drained *during*
+        an active run's recursion. A stuck goal has no active run, so a FIFO
+        enqueue would sit there forever. ``adapter.handle_message(event)`` is
+        the path the arm endpoint (POST /v1/message) uses to spawn a fresh
+        background turn from cold — exactly the cold-start re-drive we need.
+        We feed it ``GoalManager.next_continuation_prompt()`` (the same prompt
+        the post-turn hook would have enqueued), on an API_SERVER source whose
+        ``chat_id`` is the conversationId, so the re-driven turn anchors back to
+        the same ``goal:<conversationId>`` and the goal advances. The outbound
+        gate (jb_outbound) is unchanged — a watchdog-kicked turn proposes, never
+        auto-sends, like any other turn.
+
+        In-flight skip: we resolve the session key for the reconstructed source
+        and skip the goal if that key is present in the adapter's
+        ``_pending_messages`` (a message is queued/processing for that session).
+        Combined with ``stale_seconds`` (>> a normal turn) and per-session FIFO
+        serialization, this keeps the sweep from double-driving a mission that
+        is merely mid-turn.
+
+        Returns ``{"scanned": int, "kicked": [conversationId, ...]}``.
+        """
+        try:
+            from hermes_cli import goals as goals_mod
+            from hermes_cli.goals import GoalManager, GoalState
+        except Exception as exc:
+            logger.debug("watchdog: goals module unavailable: %s", exc)
+            return {"scanned": 0, "kicked": []}
+
+        db = goals_mod._get_session_db()
+        if db is None:
+            logger.debug("watchdog: session DB unavailable")
+            return {"scanned": 0, "kicked": []}
+
+        try:
+            rows = db.list_meta_prefix("goal:")
+        except Exception as exc:
+            logger.debug("watchdog: list_meta_prefix failed: %s", exc)
+            return {"scanned": 0, "kicked": []}
+
+        adapter = self.adapters.get(Platform.API_SERVER)
+        if adapter is None:
+            # Re-drive requires the adapter's cold-start background-task path
+            # (handle_message). Without an API_SERVER adapter we can still report
+            # what we scanned, but there is nothing to drive the turns through.
+            logger.debug("watchdog: no API_SERVER adapter registered; nothing to re-drive")
+            return {"scanned": len(rows), "kicked": []}
+
+        stale_seconds = self._watchdog_stale_seconds_from_config()
+        now = time.time()
+        scanned = 0
+        kicked: List[str] = []
+
+        for key, value in rows:
+            scanned += 1
+            try:
+                state = GoalState.from_json(value) if value else None
+            except Exception:
+                continue
+            if state is None or state.status != "active":
+                continue  # never touch paused / done / cleared
+            if state.turns_used >= state.max_turns:
+                continue  # budget exhausted — let the next turn auto-pause it, don't re-drive
+            if (now - (state.last_turn_at or 0.0)) <= stale_seconds:
+                continue  # fresh enough — a turn ran recently (or is running)
+
+            conversation_id = key[len("goal:"):]
+            if not conversation_id:
+                continue
+
+            # Reconstruct the same API_SERVER source the arm endpoint uses so the
+            # re-driven turn keys to the identical gateway session + goal anchor.
+            source = SessionSource(
+                platform=Platform.API_SERVER,
+                chat_id=conversation_id,
+                chat_name="Jean-Billie mission",
+                chat_type="dm",
+                user_id="jb-managed",
+                user_name="Jean-Billie",
+            )
+
+            # In-flight skip: a queued/processing message for this session means a
+            # turn is already in flight — don't double-drive.
+            try:
+                session_key = self._session_key_for_source(source)
+            except Exception:
+                session_key = None
+            pending = getattr(adapter, "_pending_messages", None)
+            if session_key and isinstance(pending, dict) and session_key in pending:
+                continue
+
+            prompt = GoalManager(
+                session_id=conversation_id,
+                default_max_turns=self._goal_max_turns_from_config(),
+            ).next_continuation_prompt()
+            if not prompt:
+                continue
+
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+            )
+            # Re-drive via the adapter's cold-start path (spawns a background
+            # turn), the same proven mechanism POST /v1/message arms with.
+            try:
+                await adapter.handle_message(event)
+                kicked.append(conversation_id)
+            except Exception as exc:
+                logger.warning("watchdog: re-drive failed for %s: %s", conversation_id, exc)
+
+        if kicked:
+            logger.info("watchdog: re-drove %d/%d stale mission(s): %s", len(kicked), scanned, kicked)
+        return {"scanned": scanned, "kicked": kicked}
 
 
 
