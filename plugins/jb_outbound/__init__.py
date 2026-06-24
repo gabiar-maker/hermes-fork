@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 
 def register(ctx) -> None:
     """Point d'entrée appelé par le PluginManager de Hermes au chargement."""
-    from . import listener
+    from . import listener, delegation_activity
     from .middleware import make_middleware
 
     ctx.register_middleware("tool_execution", make_middleware())
+    # Bus de délégation → fil d'activité (D2) + contributeurs du draft (D3). Hooks natifs, thread parent.
+    ctx.register_hook("subagent_start", delegation_activity.on_subagent_start)
+    ctx.register_hook("subagent_stop", delegation_activity.on_subagent_stop)
     listener.start()  # idempotent, loopback-only, no-op si JB_DECISION_PUSH_URL absent
     logger.info(
         "jb_outbound: interception d'envoi active (proposition → validation → exécution)"

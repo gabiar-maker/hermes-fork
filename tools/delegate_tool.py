@@ -922,6 +922,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Casquette (department) responsable de la sous-tâche — id stable, ou None si non taguée (D2/D3).
+    department: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1180,6 +1182,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._jb_department = department  # casquette responsable (D2/D3) ; None si non taguée
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
 
     # Share a credential pool with the child when possible so subagents can
@@ -1219,6 +1222,7 @@ def _build_child_agent(
             child_subagent_id=subagent_id,
             child_role=effective_role,
             child_goal=goal,
+            child_department=department,
         )
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
@@ -1976,19 +1980,25 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    department: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, department)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, department}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The optional 'department' parameter tags the delegated work with the
+    team role (casquette) responsible — a stable id such as "comptable" —
+    for the live team view and multi-role attribution. Per-task department
+    beats the top-level one. Leave it unset unless a procedure provides it.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2111,6 +2121,9 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # D2/D3 : casquette responsable de la sous-tâche (id stable, ex. "comptable") — per-task
+            # prime sur le top-level ; None si non taguée (repli : aucune attribution inventée).
+            effective_department = t.get("department") or department or None
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2133,6 +2146,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                department=effective_department,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2329,6 +2343,8 @@ def delegate_task(
                 parent_session_id=_parent_session_id,
                 parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                 child_session_id=getattr(_child_agent, "session_id", None),
+                child_subagent_id=getattr(_child_agent, "_subagent_id", None),
+                child_department=getattr(_child_agent, "_jb_department", None),
                 child_role=child_role,
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),

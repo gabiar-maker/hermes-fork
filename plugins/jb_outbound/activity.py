@@ -36,7 +36,7 @@ def emit(phase: str, status: str, ctx: Optional[Dict[str, Any]]) -> None:
         from . import config, http_client
 
         event: Dict[str, Any] = {"phase": phase, "status": status}
-        for key in ("department", "skill_id", "job_id", "label"):
+        for key in ("department", "skill_id", "job_id", "label", "correlation_id"):
             value = (ctx or {}).get(key)
             if value:
                 event[key] = value
