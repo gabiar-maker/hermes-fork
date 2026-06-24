@@ -34,7 +34,7 @@ def make_middleware() -> Callable[..., Any]:
         next_call: Callable[[Any], Any],
         **_: Any,
     ) -> Any:
-        from . import classify, config, http_client, job_context, mapping, store
+        from . import classify, config, contributions, http_client, job_context, mapping, store
 
         # Plugin passif hors box Jean-Billie (JB_DECISION_PUSH_URL non posé) : ne rien changer.
         if not config.enabled():
@@ -75,6 +75,27 @@ def make_middleware() -> Callable[..., Any]:
             value = ctx.get(key)
             if value:
                 body[key] = value
+
+        # Attribution MULTI-RÔLES (D3) : le LEAD (département du job_context parent) + les casquettes
+        # DÉLÉGUÉES accumulées sur le tour (hook subagent_start) → `contributors`. Émis SEULEMENT s'il y
+        # a au moins un support distinct (≥ 2 contributeurs) ; sinon omis → le portail retombe sur
+        # `department` (legacy). En chat libre sans lead, on promeut le 1er contributeur en lead (Q5).
+        lead = ctx.get("department")
+        supports = [c for c in contributions.snapshot() if c.get("department")]
+        contributors = []
+        if lead:
+            contributors.append({"department": lead, "role": "lead"})
+            contributors.extend(c for c in supports if c["department"] != lead)
+        elif supports:
+            first = supports[0]
+            promoted = {"department": first["department"], "role": "lead"}
+            if first.get("skill_id"):
+                promoted["skill_id"] = first["skill_id"]
+            contributors.append(promoted)
+            contributors.extend(c for c in supports[1:] if c["department"] != first["department"])
+        if len(contributors) >= 2:
+            body["contributors"] = contributors
+        contributions.reset()  # un draft = une livraison → on repart propre (Q4)
 
         try:
             http_client.post_json(config.draft_url(), body)

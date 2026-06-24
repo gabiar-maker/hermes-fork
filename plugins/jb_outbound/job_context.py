@@ -90,11 +90,14 @@ def _build_ctx(job: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     job = job or {}
     skills = _skill_names(job)
     department, skill_id = _resolve_department(skills)
+    job_id = str(job.get("id") or "").strip() or None
     return {
-        "job_id": str(job.get("id") or "").strip() or None,
+        "job_id": job_id,
         "skill_id": skill_id,
         "department": department,
         "label": str(job.get("name") or "").strip() or None,
+        # D2 : appariement started↔finished du job dans le fil temps réel (homogène avec les délégations).
+        "correlation_id": job_id,
     }
 
 
