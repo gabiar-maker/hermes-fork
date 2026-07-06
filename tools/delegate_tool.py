@@ -2865,6 +2865,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "department": {
+                            "type": "string",
+                            "description": "Per-task casquette id (see top-level 'department').",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2877,6 +2881,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "department": {
+                "type": "string",
+                "description": (
+                    "Casquette (role) responsible for this delegated work, as a stable "
+                    "id (e.g. 'comptable', 'commercial', 'community'). Set it ONLY to the "
+                    "value a skill explicitly told you to use -- do NOT invent one. Tags "
+                    "the sub-task for the live team view and multi-role attribution."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2922,6 +2935,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        department=args.get("department"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

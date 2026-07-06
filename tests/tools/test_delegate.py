@@ -2795,5 +2795,35 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestDelegateDepartmentTag(unittest.TestCase):
+    """Le tag `department` (D2/D3) doit être exposé au LLM (schéma) ET transmis par le
+    handler à delegate_task — sinon le pré-câblage `delegates_to` des skills gold reste
+    inerte au runtime et le fil d'équipe ne s'allume jamais pour les délégations."""
+
+    def test_department_exposed_in_schema(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("department", props, "department absent du schéma top-level")
+        self.assertIn(
+            "department",
+            props["tasks"]["items"]["properties"],
+            "department absent du schéma des items batch",
+        )
+
+    def test_handler_forwards_department(self):
+        from tools.registry import registry
+
+        entry = registry.get_entry("delegate_task")
+        self.assertIsNotNone(entry)
+        captured = {}
+        with patch(
+            "tools.delegate_tool.delegate_task",
+            side_effect=lambda **kw: captured.update(kw),
+        ):
+            entry.handler({"goal": "g", "department": "comptable"})
+        self.assertEqual(
+            captured.get("department"), "comptable", "le handler n'a pas transmis department"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
