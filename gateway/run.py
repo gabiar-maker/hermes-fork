@@ -12524,9 +12524,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return {"scanned": 0, "kicked": []}
 
         try:
-            rows = db.list_meta_prefix("goal:")
+            # Seam partagé avec GET /v1/goals — vit dans gateway/platforms/api_server.py
+            # (fichier additif déclaré) depuis F2 : hermes_state.py est redevenu identique upstream.
+            from gateway.platforms.api_server import list_goal_meta
+
+            rows = list_goal_meta(db)
         except Exception as exc:
-            logger.debug("watchdog: list_meta_prefix failed: %s", exc)
+            logger.debug("watchdog: list_goal_meta failed: %s", exc)
             return {"scanned": 0, "kicked": []}
 
         adapter = self.adapters.get(Platform.API_SERVER)
