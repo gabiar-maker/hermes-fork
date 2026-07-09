@@ -1,0 +1,50 @@
+# ============================================================================
+# Confinement du fork Jean-Billie — allowlist de chemins (lane F1)
+# ============================================================================
+#
+# RÈGLE : toute la divergence du fork vit dans plugins/jb_outbound/ plus les
+# quelques fichiers additifs déclarés ci-dessous. Zéro NOUVEAU patch du cœur
+# Hermes. Toute PR qui modifie un fichier hors de cette liste échoue en CI
+# (workflow .github/workflows/jb-guard.yml, script scripts/jb_guard_paths.py).
+#
+# Échappatoire : poser le label « jb-core-approved » sur la PR (le job passe
+# avec un avertissement). C'est la voie prévue pour les PR de RÉSORPTION des
+# patchs cœur historiques : le garde-fou empêche d'en AJOUTER, pas de les
+# supprimer.
+#
+# Patchs cœur HISTORIQUES — dette à résorber (F2/F3) — ne PAS ajouter ici :
+#   gateway/run.py
+#   cron/scheduler.py
+#   tools/delegate_tool.py
+#   hermes_cli/config.py
+#   hermes_state.py
+#   hermes_cli/subcommands/mcp.py
+#   toolsets.py
+#   Dockerfile        (toléré ci-dessous le temps de la résorption)
+#   pyproject.toml    (idem)
+#
+# Syntaxe : un glob par ligne. « ** » traverse les répertoires ; « * » et
+# « ? » restent dans un segment. Lignes vides et lignes « # » ignorées.
+# ============================================================================
+
+# Toute la divergence jb vit ici.
+plugins/jb_outbound/**
+
+# Nos tests jb (additifs).
+tests/**
+
+# CI, allowlist elle-même, workflows.
+.github/**
+
+# Fichiers additifs déclarés (n'existent pas upstream).
+gateway/platforms/api_server.py
+tools/request_tool_connection.py
+hermes_cli/mcp_config.py
+scripts/jb_guard_paths.py
+
+# Dette tolérée le temps de la résorption (F2/F3) — voir en-tête.
+Dockerfile
+pyproject.toml
+
+# Notes/specs de travail (untracked ou versionnées selon les lanes).
+tasks/**

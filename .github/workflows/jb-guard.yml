@@ -1,0 +1,42 @@
+name: JB — Confinement du fork
+
+# Garde-fou lane F1 : échoue si une PR modifie des fichiers hors du périmètre
+# autorisé (.github/jb-allowed-paths.txt). La divergence du fork vit dans
+# plugins/jb_outbound/ + quelques fichiers additifs déclarés ; zéro nouveau
+# patch du cœur Hermes.
+#
+# Échappatoire : le label « jb-core-approved » sur la PR fait passer le job
+# (avec un avertissement). C'est la voie prévue pour les PR de résorption des
+# patchs cœur historiques (F2/F3).
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jb-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Périmètre du diff (allowlist jb)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Échappatoire — label jb-core-approved
+        if: contains(github.event.pull_request.labels.*.name, 'jb-core-approved')
+        run: |
+          echo "::warning::Label « jb-core-approved » présent — garde-fou de confinement contourné volontairement (patch cœur approuvé)."
+
+      - name: Checkout (historique complet pour le diff de base)
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'jb-core-approved') }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Vérifier le périmètre du diff
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'jb-core-approved') }}
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | python3 scripts/jb_guard_paths.py
