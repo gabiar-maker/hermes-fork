@@ -93,8 +93,10 @@ REQUEST_TOOL_CONNECTION_SCHEMA = {
         "encaisser un paiement, suivre des candidatures), appelle cet outil avec l'INTENTION en langage "
         "naturel. Tu recevras un message à présenter au client — souvent un lien pour brancher l'outil "
         "depuis son espace. N'invente JAMAIS de lien : utilise uniquement ce que cet outil te renvoie, "
-        "et ne le propose qu'UNE fois par demande. Si le statut est « no-match » ou « unavailable », "
-        "dis simplement et franchement que tu ne sais pas encore faire ça."
+        "et ne le propose qu'UNE fois par demande. Si le statut est « no-match » AVEC un lien, propose "
+        "chaleureusement au client de brancher son propre outil via ce lien (il sait déjà quel outil il "
+        "utilise pour ça) ; sans lien, ou si le statut est « unavailable », dis simplement et franchement "
+        "que tu ne sais pas encore faire ça."
     ),
     "parameters": {
         "type": "object",
