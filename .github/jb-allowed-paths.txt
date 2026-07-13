@@ -36,18 +36,18 @@
 # Ces fichiers restent HORS allowlist : les toucher exige « jb-core-approved ».
 # Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à chaque rebase mensuel.
 #
-#   gateway/run.py (+~190)
+#   gateway/run.py (+199 −2)
 #       Watchdog des missions managées : constante stale + resolver config
 #       (goals.watchdog_stale_seconds, clé HORS DEFAULT_CONFIG, fallback local)
 #       + _watchdog_sweep (re-drive à froid via handle_message, POST
 #       /v1/watchdog-tick) ; ancre conversationId (_goal_anchor_for_source +
 #       2 points de câblage) pour survivre à la rotation de session.
 #       Raison : aucun hook de maintenance/périodique natif côté plugins.
-#   cron/scheduler.py (+52)
+#   cron/scheduler.py (+52 −1)
 #       Wrapper run_job → hooks d'attribution jb (job_context), best-effort,
 #       stock sans plugin. Raison : aucun hook cycle-de-vie cron natif ;
 #       candidat n°1 à une PR upstream pre/post_cron_job (différé post-F2).
-#   tools/delegate_tool.py (+~37)
+#   tools/delegate_tool.py (+35 −2)
 #       Plumbing du param « department » (schéma + kwargs des hooks
 #       subagent_start/stop + tag de l'agent enfant) — consommé par le plugin
 #       (delegation_activity). Additif au tool natif.
@@ -58,8 +58,46 @@
 #       gain) ; ré-évaluer au rebase.
 #   scripts/release.py (+2)         AUTHOR_MAP (2 auteurs upstream).
 #   .github/workflows/build-push.yml (+148, jb-owned)  CI image GHCR.
-#   uv.lock                          Lockfile (suivit pyproject) — sous label
+#   uv.lock (+14)                    Lockfile (suivit pyproject) — sous label
 #                                    à dessein (surface supply-chain).
+#
+# TOTAL sous label (7 fichiers upstream) : +362 −5.
+# Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
+#   gateway/platforms/api_server.py (+229) · Dockerfile (+29 −1) · pyproject.toml (+10 −3).
+# Dette cœur consolidée (10 fichiers upstream touchés) : +630 −9 vs v2026.7.7.2.
+#
+# ----------------------------------------------------------------------------
+# VÉRIFICATION MENSUELLE (2026-07-13) — AUCUN REBASE : pas de nouvelle release.
+#
+#   Base actuelle du fork      : v2026.7.7.2 (Hermes 0.18.2, publiée 2026-07-08).
+#   Dernière release amont     : v2026.7.7.2 — LA MÊME. Le canal stable n'a pas
+#                                bougé ; `upstream/main` porte 420 commits non
+#                                publiés (634 fichiers, +38060 −4725) : hors
+#                                politique (on ne rebase que sur des TAGS).
+#   Dette cœur                 : INCHANGÉE depuis F2 (chiffres ci-dessus rendus
+#                                exacts ; les « ~ » précédents étaient estimés).
+#                                Zéro patch cœur ajouté par les PR #18/#19/#20 :
+#                                le garde-fou a tenu.
+#   Patch supprimable ?        : NON. `hermes_cli/plugins.py` est IDENTIQUE en
+#                                amont (VALID_HOOKS inchangé) : toujours aucun
+#                                hook natif maintenance/périodique ni cycle-de-vie
+#                                cron ; `department` toujours absent du
+#                                delegate_tool amont. Les 3 gros patchs restent
+#                                justifiés.
+#
+#   COLLISIONS PRÉVUES au prochain rebase (sonde de merge sur upstream/main,
+#   jetée après mesure — 2 fichiers, 1 hunk chacun, tout le reste auto-mergé) :
+#     - gateway/run.py : l'amont passe `_get_goal_manager_for_event` en
+#       `async def`. Notre `_goal_anchor_for_source` est inséré juste au-dessus
+#       → conflit purement positionnel. Résolution : garder notre méthode ET
+#       prendre la signature `async` amont (nos 2 points de câblage appellent
+#       `_goal_anchor_for_source`, pas le getter : rien d'autre à awaiter).
+#     - scripts/release.py : AUTHOR_MAP, ajouts des deux côtés au même endroit.
+#       Résolution : UNION (l'amont mappe les mêmes personnes sous D'AUTRES
+#       e-mails — nos 2 entrées restent nécessaires).
+#   Reste à surveiller (gros remaniements amont, auto-mergés mais à relire) :
+#     cron/scheduler.py (+174 amont : drain à l'arrêt, claim heartbeats),
+#     gateway/platforms/api_server.py (+170 −…), tools/delegate_tool.py (+57).
 #
 # RÉSORBÉ PAR F2 (2026-07-09) — ne PAS ré-introduire :
 #   toolsets.py          (request_tool_connection → register_tool du plugin)
