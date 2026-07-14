@@ -3,8 +3,12 @@
 « Rien ne part sans accord » couvre TOUS les canaux. Trois familles d'outils passent par le
 `tool_execution` middleware :
   - `send_message` : envoi gateway (Telegram, etc.) → proposition.
-  - `mcp_composio_*` : email / réseaux sociaux via Composio. Lecture → passe ; écriture → proposition ;
-    action composio AMBIGUË → bloquée (fail-closed, on élargit les listes au besoin).
+  - `mcp__composio__*` : email / réseaux sociaux via Composio. Lecture → passe ; écriture → proposition ;
+    action composio AMBIGUË → bloquée (fail-closed, on élargit les listes au besoin). Le préfixe
+    double-underscore (``mcp__<serveur>__<outil>``) est celui que Hermes enregistre réellement
+    (``tools/mcp_tool.py:mcp_prefixed_tool_name``) — ce module doit matcher le nom RUNTIME, pas une
+    supposition. Le contrat est verrouillé par un test qui IMPORTE ce préfixe (voir
+    `test_jb_outbound.py::test_prefixe_composio_matche_le_nommage_runtime_mcp_tool`).
   - MCP ADDITIONNELS (hors Composio) : déclarés par l'opérateur via la table managée
     (`managed.json`, cf. `managed.py`). Une fonction listée comme ACTION (write/egress) devient une
     proposition (dashboard) ; toute autre fonction d'un MCP additionnel est une lecture → passe.
@@ -25,9 +29,9 @@ BLOCK = "block"      # fail-closed : refuser (envoi non répertorié)
 # Envois gateway directs.
 SEND_TOOLS = {"send_message"}
 
-_COMPOSIO_PREFIX = "mcp_composio_"
+_COMPOSIO_PREFIX = "mcp__composio__"
 
-# Marqueurs d'ACTION dans le nom d'outil MCP (ex. mcp_composio_GMAIL_SEND_EMAIL).
+# Marqueurs d'ACTION dans le nom d'outil MCP (ex. mcp__composio__GMAIL_SEND_EMAIL).
 _WRITE_MARKERS = ("SEND", "CREATE", "POST", "REPLY", "PUBLISH", "ADD", "UPDATE", "DELETE", "DRAFT")
 _READ_MARKERS = ("GET", "LIST", "FETCH", "SEARCH", "READ", "FIND", "RETRIEVE", "EXPORT")
 
