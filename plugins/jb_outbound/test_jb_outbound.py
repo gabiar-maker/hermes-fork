@@ -19,12 +19,20 @@ _PLUGINS_DIR = Path(__file__).resolve().parents[1]
 if str(_PLUGINS_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGINS_DIR))
 
+# Racine du fork sur le path : nécessaire pour importer `tools.mcp_tool` (le nommage RUNTIME
+# des outils MCP, source de vérité que ce test importe plutôt que de le supposer — cf.
+# test_prefixe_composio_matche_le_nommage_runtime_mcp_tool ci-dessous).
+_FORK_ROOT = Path(__file__).resolve().parents[2]
+if str(_FORK_ROOT) not in sys.path:
+    sys.path.insert(0, str(_FORK_ROOT))
+
 import jb_outbound.classify as classify  # noqa: E402
 import jb_outbound.http_client as http_client  # noqa: E402
 import jb_outbound.mapping as mapping  # noqa: E402
 import jb_outbound.middleware as middleware  # noqa: E402
 import jb_outbound.replay as replay  # noqa: E402
 import jb_outbound.store as store  # noqa: E402
+from tools.mcp_tool import mcp_prefixed_tool_name  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,8 +50,12 @@ def _write_managed(tmp_path, write_tools: dict) -> None:
     )
 
 
-# Une action MCP additionnelle typique (serveur `x-crm`, outil `create_contact`).
-_CRM_ACTION = {"mcp_x_crm_create_contact": {"label": "Créer un contact", "kind": "action"}}
+# Une action MCP additionnelle typique (serveur `x-crm`, outil `create_contact`). Les clés de
+# `managed.json` sont posées par le portail avec le nom RUNTIME que Hermes enregistre réellement
+# (`tools.mcp_tool.mcp_prefixed_tool_name`) — on la DÉRIVE par import, jamais en littéral, pour ne
+# pas rejouer le bug C1 (le portail et le fork divergent silencieusement sur le nommage).
+_CRM_TOOL_NAME = mcp_prefixed_tool_name("x-crm", "create_contact")
+_CRM_ACTION = {_CRM_TOOL_NAME: {"label": "Créer un contact", "kind": "action"}}
 
 
 @pytest.fixture
@@ -60,11 +72,30 @@ def posts(tmp_path, monkeypatch):
 
 def test_classify():
     assert classify.classify("send_message") == classify.PROPOSE
-    assert classify.classify("mcp_composio_GMAIL_SEND_EMAIL") == classify.PROPOSE
-    assert classify.classify("mcp_composio_LINKEDIN_CREATE_POST") == classify.PROPOSE
-    assert classify.classify("mcp_composio_GMAIL_FETCH_MESSAGES") == classify.PASS
-    assert classify.classify("mcp_composio_UNCLASSIFIED_THING") == classify.BLOCK  # fail-closed
+    assert classify.classify("mcp__composio__GMAIL_SEND_EMAIL") == classify.PROPOSE
+    assert classify.classify("mcp__composio__LINKEDIN_CREATE_POST") == classify.PROPOSE
+    assert classify.classify("mcp__composio__GMAIL_FETCH_MESSAGES") == classify.PASS
+    assert classify.classify("mcp__composio__UNCLASSIFIED_THING") == classify.BLOCK  # fail-closed
     assert classify.classify("write_file") == classify.PASS
+
+
+def test_prefixe_composio_matche_le_nommage_runtime_mcp_tool():
+    """Contrat verrouillé : le préfixe que `classify.py` reconnaît DOIT être exactement celui que
+    Hermes assigne réellement aux outils du serveur MCP `composio` (`tools/mcp_tool.py`). Ce test
+    IMPORTE `mcp_prefixed_tool_name` au lieu de supposer un format littéral — il devient ROUGE si
+    l'un des deux côtés (classify.py ou mcp_tool.py) change son nommage sans l'autre (c'est
+    exactement le bug C1 : `mcp_composio_*` vs `mcp__composio__*`)."""
+    full_name = mcp_prefixed_tool_name("composio", "GMAIL_SEND_EMAIL")
+    assert full_name == "mcp__composio__GMAIL_SEND_EMAIL"  # sanity : ce que Hermes produit vraiment
+
+    # (a) le préfixe que classify.py reconnaît est un préfixe EXACT du nom runtime.
+    assert full_name.startswith(classify._COMPOSIO_PREFIX)
+    assert classify._COMPOSIO_PREFIX == full_name.removesuffix("GMAIL_SEND_EMAIL")
+
+    # (b) bout en bout : un vrai nom runtime (généré, pas littéral) est classé correctement.
+    assert classify.classify(mcp_prefixed_tool_name("composio", "GMAIL_SEND_EMAIL")) == classify.PROPOSE
+    assert classify.classify(mcp_prefixed_tool_name("composio", "GMAIL_FETCH_MESSAGES")) == classify.PASS
+    assert classify.classify(mcp_prefixed_tool_name("composio", "UNCLASSIFIED_THING")) == classify.BLOCK
 
 
 def test_classify_browser_lecture_passe_ecriture_propose():
@@ -90,7 +121,7 @@ def test_classify_browser_lecture_passe_ecriture_propose():
 
 def test_mapping_email_minimise_le_corps():
     d = mapping.to_draft(
-        "mcp_composio_GMAIL_SEND_EMAIL",
+        "mcp__composio__GMAIL_SEND_EMAIL",
         {"recipient_email": "marie@ex.fr", "subject": "Votre devis", "body": "Bonjour Marie, ..."},
     )
     assert d["kind"] == "email"
@@ -148,7 +179,7 @@ def test_middleware_block_fail_closed(posts):
 
     out = json.loads(
         middleware.make_middleware()(
-            tool_name="mcp_composio_UNCLASSIFIED_THING", args={}, next_call=next_call
+            tool_name="mcp__composio__UNCLASSIFIED_THING", args={}, next_call=next_call
         )
     )
     assert out["status"] == "blocked"
@@ -156,7 +187,7 @@ def test_middleware_block_fail_closed(posts):
 
 
 def test_replay_execute_puis_idempotent(posts, monkeypatch):
-    store.save("abc123", "mcp_composio_GMAIL_SEND_EMAIL", {"recipient_email": "m@ex.fr", "body": "hi"}, "email", "m@ex.fr")
+    store.save("abc123", "mcp__composio__GMAIL_SEND_EMAIL", {"recipient_email": "m@ex.fr", "body": "hi"}, "email", "m@ex.fr")
 
     dispatched: list = []
     fake_registry = types.SimpleNamespace(
@@ -172,7 +203,7 @@ def test_replay_execute_puis_idempotent(posts, monkeypatch):
     replay.handle_decision(decision)
 
     # envoi RÉEL rejoué avec les args exacts
-    assert dispatched == [("mcp_composio_GMAIL_SEND_EMAIL", {"recipient_email": "m@ex.fr", "body": "hi"})]
+    assert dispatched == [("mcp__composio__GMAIL_SEND_EMAIL", {"recipient_email": "m@ex.fr", "body": "hi"})]
     # résultat remonté : executed, id = id de proposition (round-trip control-plane)
     results = [p for p in posts if p[0].endswith("/v1/result")]
     assert results and results[-1][1] == {"id": "prop-1", "status": "executed", "error": ""}
@@ -190,23 +221,23 @@ def test_replay_execute_puis_idempotent(posts, monkeypatch):
 def test_classify_action_mcp_additionnel(tmp_path):
     _write_managed(tmp_path, _CRM_ACTION)
     # Action déclarée → proposition (dashboard).
-    assert classify.classify("mcp_x_crm_create_contact") == classify.PROPOSE
+    assert classify.classify(_CRM_TOOL_NAME) == classify.PROPOSE
     # Lecture du MÊME serveur, non déclarée comme action → PASS (aucun blocage, conforme à la consigne).
-    assert classify.classify("mcp_x_crm_find_contact") == classify.PASS
+    assert classify.classify(mcp_prefixed_tool_name("x-crm", "find_contact")) == classify.PASS
 
 
 def test_classify_sans_table_managee_ne_bloque_pas(tmp_path):
     # Pas de managed.json → un outil de MCP additionnel reste une lecture (PASS), jamais bloqué.
-    assert classify.classify("mcp_x_crm_create_contact") == classify.PASS
+    assert classify.classify(_CRM_TOOL_NAME) == classify.PASS
 
 
 def test_mapping_action_utilise_le_libelle_white_label(tmp_path):
     _write_managed(tmp_path, _CRM_ACTION)
-    d = mapping.to_draft("mcp_x_crm_create_contact", {"name": "Marie", "note": "rappeler le devis"})
+    d = mapping.to_draft(_CRM_TOOL_NAME, {"name": "Marie", "note": "rappeler le devis"})
     assert d["kind"] == "action"
     assert d["title"] == "Créer un contact"  # libellé opérateur
     # White-label : le nom technique de l'outil ne fuit nulle part dans la proposition.
-    assert "mcp_x_crm" not in json.dumps(d, ensure_ascii=False)
+    assert "x_crm" not in json.dumps(d, ensure_ascii=False)
 
 
 def test_middleware_action_court_circuite_et_depose(posts, tmp_path):
@@ -217,7 +248,7 @@ def test_middleware_action_court_circuite_et_depose(posts, tmp_path):
 
     out = json.loads(
         middleware.make_middleware()(
-            tool_name="mcp_x_crm_create_contact", args={"name": "Marie"}, next_call=next_call
+            tool_name=_CRM_TOOL_NAME, args={"name": "Marie"}, next_call=next_call
         )
     )
     assert out["status"] == "queued_for_approval"

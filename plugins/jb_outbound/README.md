@@ -7,7 +7,7 @@ greffe optionnel dans le scheduler cron** (`cron/scheduler.py::run_job`, no-op s
 ## Ce que ça fait
 
 Tout envoi sortant que l'assistant tente — message **Telegram** (`send_message`) ou **email / réseau
-social** via **Composio** (`mcp_composio_*`) — est **intercepté** et transformé en **proposition à
+social** via **Composio** (`mcp__composio__*`) — est **intercepté** et transformé en **proposition à
 valider**. L'envoi réel n'a lieu qu'**après l'accord du client**.
 
 Les deux familles d'envoi passent par le même `tool_execution` middleware (Hermes) → un seul point

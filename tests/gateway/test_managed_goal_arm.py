@@ -290,15 +290,26 @@ class TestOutboundInvariant:
 
         return classify
 
+    @staticmethod
+    def _mcp_name(server: str, tool: str) -> str:
+        # Nom RUNTIME réel (jamais un littéral supposé) — même contrat que
+        # plugins/jb_outbound/test_jb_outbound.py::test_prefixe_composio_matche_le_nommage_runtime_mcp_tool.
+        fork_root = Path(__file__).resolve().parents[2]
+        if str(fork_root) not in sys.path:
+            sys.path.insert(0, str(fork_root))
+        from tools.mcp_tool import mcp_prefixed_tool_name  # noqa: WPS433
+
+        return mcp_prefixed_tool_name(server, tool)
+
     def test_outbound_tools_are_proposed_not_sent(self):
         classify = self._classify()
         # Native send + Composio third-party egress → PROPOSE (dashboard approval required).
         assert classify.classify("send_message") == classify.PROPOSE
-        assert classify.classify("mcp_composio_GMAIL_SEND_EMAIL") == classify.PROPOSE
-        assert classify.classify("mcp_composio_LINKEDIN_CREATE_POST") == classify.PROPOSE
+        assert classify.classify(self._mcp_name("composio", "GMAIL_SEND_EMAIL")) == classify.PROPOSE
+        assert classify.classify(self._mcp_name("composio", "LINKEDIN_CREATE_POST")) == classify.PROPOSE
 
     def test_reads_pass_and_unknown_egress_fails_closed(self):
         classify = self._classify()
-        assert classify.classify("mcp_composio_GMAIL_FETCH_MESSAGES") == classify.PASS
+        assert classify.classify(self._mcp_name("composio", "GMAIL_FETCH_MESSAGES")) == classify.PASS
         # An unclassified Composio action is BLOCKED, never auto-sent.
-        assert classify.classify("mcp_composio_UNCLASSIFIED_THING") == classify.BLOCK
+        assert classify.classify(self._mcp_name("composio", "UNCLASSIFIED_THING")) == classify.BLOCK
