@@ -113,6 +113,42 @@ Endpoints lus dans l'environnement (posés par le bundle Jean-Billie / le `daemo
 `http://127.0.0.1:8444/jb/decision`), `JB_ACTIVITY_EVENTS` (`1` pour activer le fil d'activité,
 défaut OFF). Sans `JB_DECISION_PUSH_URL`, le plugin reste **passif**.
 
+## Lancer / builder une box locale sous Windows
+
+Deux pièges spécifiques à Windows, tous deux prouvés en local (P1) :
+
+1. **`docker-compose.windows.yml` doit référencer l'image du fork, pas l'upstream.**
+   C'est la variante du compose principal (`docker-compose.yml`) qui remplace
+   `network_mode: host` par des `ports:` explicites — nécessaire car Docker Desktop
+   pour Windows ne supporte pas le mode réseau host. Elle référence désormais
+   `image: hermes-agent` (le tag construit localement, identique au compose
+   principal), **pas** `nousresearch/hermes-agent:latest`. Si elle pointait vers
+   l'image upstream, une box lancée avec ce fichier n'embarquerait PAS
+   `plugins/jb_outbound/` : « rien ne part sans accord » serait absent,
+   silencieusement (aucune erreur au démarrage — l'agent tournerait, juste sans
+   le middleware de validation). Construisez l'image du fork avant de lancer
+   ce compose (`docker compose build` via `docker-compose.yml`, ou
+   `docker build -t hermes-agent .`).
+
+2. **Builder l'image depuis un checkout Windows avec `core.autocrlf=true` casse le
+   boot du conteneur.** Les scripts de service s6 (`docker/s6-rc.d/**/run`,
+   `.../type`, …) n'ont pas d'extension et ne sont donc pas couverts par les
+   règles `text eol=lf` de `.gitattributes` (qui ne visent que `*.sh` et
+   `Dockerfile`). Avec `core.autocrlf=true`, le checkout Windows les convertit en
+   CRLF ; le `Dockerfile` les copie tels quels (`COPY docker/s6-rc.d/ /etc/
+   s6-overlay/s6-rc.d/`), et le conteneur crashe au boot avec :
+   ```
+   s6-rc-compile: fatal: invalid /etc/s6-overlay/s6-rc.d/dashboard/type
+   ```
+   **Contournement prouvé** : exporter les sources en LF avant de builder, sans
+   toucher au checkout local —
+   ```sh
+   git -c core.autocrlf=false archive HEAD | tar -x -C /path/vers/export-lf
+   cd /path/vers/export-lf && docker build -t hermes-agent .
+   ```
+   ou, plus simplement, builder depuis WSL (checkout Linux natif, pas de
+   conversion de fin de ligne).
+
 ## Tests
 
 `python -m pytest plugins/jb_outbound/` — autonome (mocke le HTTP loopback et le registre

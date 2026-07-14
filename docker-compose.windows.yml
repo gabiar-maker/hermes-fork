@@ -6,12 +6,20 @@
 #   - Uses explicit port mappings instead
 #   - Uses Windows-style volume path for ~/.hermes
 #
+# Image: same as docker-compose.yml (the local fork build, tag `hermes-agent`,
+# NOT the upstream `nousresearch/hermes-agent` image) — this fork adds the
+# plugins/jb_outbound/ plugin, which upstream does not have. Build it first
+# with `docker compose build` (uses docker-compose.yml's `build: .`) or
+# `docker build -t hermes-agent .`. See plugins/jb_outbound/README.md for the
+# Windows build pitfalls (CRLF checkout) before building from a native
+# Windows checkout.
+#
 # Usage:
 #   docker compose -f docker-compose.windows.yml up -d
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    image: hermes-agent
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -22,7 +30,7 @@ services:
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: hermes-agent
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:
