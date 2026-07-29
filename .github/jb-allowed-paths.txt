@@ -66,12 +66,16 @@
 #   .github/workflows/build-push.yml (+148, jb-owned)  CI image GHCR.
 #   uv.lock (+14)                    Lockfile (suivit pyproject) — sous label
 #                                    à dessein (surface supply-chain).
+#   docker-compose.windows.yml (+10 −2)  Compose Windows pointé sur l'image
+#                                    FORK (ghcr.io/gabiar-maker/hermes), pas
+#                                    l'amont (PR #23) — manquait au registre,
+#                                    constaté au re-calcul du 2026-08-07.
 #
-# TOTAL sous label (7 fichiers upstream) : +372 −5.
+# TOTAL sous label (8 fichiers upstream) : +382 −7.
 # Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
 #   gateway/platforms/api_server.py (+240, dont property supports_push_send=False)
 #   · Dockerfile (+29 −1) · pyproject.toml (+10 −3).
-# Dette cœur consolidée (10 fichiers upstream touchés) : +651 −9 vs v2026.7.7.2.
+# Dette cœur consolidée (11 fichiers upstream touchés) : +661 −11 vs v2026.7.7.2.
 #
 # ----------------------------------------------------------------------------
 # VÉRIFICATION MENSUELLE (2026-07-13) — AUCUN REBASE : pas de nouvelle release.

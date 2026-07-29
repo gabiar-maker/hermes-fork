@@ -121,9 +121,21 @@ async def test_goal_status_notice_skips_push_less_adapter(caplog):
     cockpit's log source.  An adapter declaring ``supports_push_send = False``
     must be skipped silently (goal state is read over GET /v1/goals instead).
     """
+    class PushLessFakeAdapter(FakeAdapter):
+        # Mirror the real APIServerAdapter contract: send() records the call
+        # then FAILS — so if the guard were removed, BOTH assertions below
+        # break (calls non-empty, warning logged), not just the first.
+        supports_push_send = False
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+            return SimpleNamespace(
+                success=False,
+                error="API server uses HTTP request/response, not send()",
+            )
+
     runner = GatewayRunner.__new__(GatewayRunner)
-    adapter = FakeAdapter()
-    adapter.supports_push_send = False
+    adapter = PushLessFakeAdapter()
     runner.adapters = {Platform.API_SERVER: adapter}
 
     source = SessionSource(platform=Platform.API_SERVER, chat_id="api")
