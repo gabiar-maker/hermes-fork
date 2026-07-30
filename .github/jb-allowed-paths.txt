@@ -73,9 +73,11 @@
 #
 # TOTAL sous label (8 fichiers upstream) : +382 −7.
 # Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
-#   gateway/platforms/api_server.py (+240, dont property supports_push_send=False)
+#   gateway/platforms/api_server.py (+265, dont property supports_push_send=False
+#   et l'override _send_with_retry — envoi unique, DEBUG : coupe la paire
+#   WARNING+ERROR par tour de mission dans errors.log, constatée LIVE 2026-08-09)
 #   · Dockerfile (+29 −1) · pyproject.toml (+10 −3).
-# Dette cœur consolidée (11 fichiers upstream touchés) : +661 −11 vs v2026.7.7.2.
+# Dette cœur consolidée (11 fichiers upstream touchés) : +686 −11 vs v2026.7.7.2.
 #
 # ----------------------------------------------------------------------------
 # VÉRIFICATION MENSUELLE (2026-07-13) — AUCUN REBASE : pas de nouvelle release.
@@ -129,8 +131,9 @@ plugins/jb_outbound/**
 tests/**
 
 # Surface du CONTRAT MANAGÉ (fichier MIXTE upstream+jb depuis 0.18 : upstream a
-# introduit sa propre plateforme api_server ; notre diff = +229 : handlers
-# arm/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream).
+# introduit sa propre plateforme api_server ; notre diff = +265 : handlers
+# arm/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream,
+# supports_push_send + override _send_with_retry).
 # Reste allowlisté car c'est LE seam actif du contrat daemon↔fork — n'y toucher
 # QUE pour ce contrat, jamais pour patcher du comportement upstream.
 gateway/platforms/api_server.py
