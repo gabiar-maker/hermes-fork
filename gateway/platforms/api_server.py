@@ -885,6 +885,17 @@ class APIServerAdapter(BasePlatformAdapter):
     def authorization_is_upstream(self) -> bool:
         return True
 
+    # Delivery on this adapter is the HTTP request/response cycle: there is no
+    # push channel and ``send()`` is a contractual failure (see below). Managed
+    # /goal status notices must not be attempted here — the co-located control
+    # daemon reads goal state over GET /v1/goals instead. Declaring the seam on
+    # the adapter (same pattern as ``authorization_is_upstream`` above) keeps
+    # gateway/run.py free of Platform.API_SERVER special-cases; the gateway
+    # checks it with ``getattr(adapter, "supports_push_send", True)``.
+    @property
+    def supports_push_send(self) -> bool:
+        return False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}

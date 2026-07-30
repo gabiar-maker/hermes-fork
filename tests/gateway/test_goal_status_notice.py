@@ -110,6 +110,51 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
     ]
 
 
+@pytest.mark.asyncio
+async def test_goal_status_notice_skips_push_less_adapter(caplog):
+    """Regression: no spurious warning on adapters without a push channel.
+
+    APIServerAdapter delivers over the HTTP request/response cycle; its
+    ``send()`` is a contractual failure.  Every continuation turn of a managed
+    mission therefore logged "goal continuation: status send failed: API
+    server uses HTTP request/response, not send()" — polluting errors.log, the
+    cockpit's log source.  An adapter declaring ``supports_push_send = False``
+    must be skipped silently (goal state is read over GET /v1/goals instead).
+    """
+    class PushLessFakeAdapter(FakeAdapter):
+        # Mirror the real APIServerAdapter contract: send() records the call
+        # then FAILS — so if the guard were removed, BOTH assertions below
+        # break (calls non-empty, warning logged), not just the first.
+        supports_push_send = False
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+            return SimpleNamespace(
+                success=False,
+                error="API server uses HTTP request/response, not send()",
+            )
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = PushLessFakeAdapter()
+    runner.adapters = {Platform.API_SERVER: adapter}
+
+    source = SessionSource(platform=Platform.API_SERVER, chat_id="api")
+
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        await runner._send_goal_status_notice(source, "✓ Goal achieved: done")
+
+    assert adapter.calls == []
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
+
+def test_api_server_adapter_declares_no_push_send():
+    """Contract: the seam lives on the adapter, not in a Platform special-case."""
+    from gateway.platforms.api_server import APIServerAdapter
+
+    adapter = APIServerAdapter.__new__(APIServerAdapter)
+    assert adapter.supports_push_send is False
+
+
 def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
     """Regression: /goal pause/clear must cancel queued self-continuations.
 
