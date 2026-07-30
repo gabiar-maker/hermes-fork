@@ -5147,6 +5147,31 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
 
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Short-circuit the base retry/fallback ladder on this push-less adapter.
+
+        ``send()`` is a contractual failure here (``supports_push_send`` is
+        False), so the base implementation would log a WARNING then attempt a
+        plain-text fallback and log an ERROR — one pair per managed-mission
+        turn (final-answer delivery, acks) — into errors.log, the cockpit's
+        log source. Same seam as the goal status notice guard: attempt once,
+        return the contractual failure unchanged, log at DEBUG only. Delivery
+        on this platform is the HTTP request/response cycle; mission output is
+        read over GET /v1/goals and the session APIs.
+        """
+        result = await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
+        if not result.success:
+            logger.debug("[%s] push send skipped (no push channel): %s", self.name, result.error)
+        return result
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""
         return {
