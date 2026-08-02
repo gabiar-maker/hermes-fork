@@ -131,10 +131,9 @@ plugins/jb_outbound/**
 tests/**
 
 # Surface du CONTRAT MANAGÉ (fichier MIXTE upstream+jb depuis 0.18 : upstream a
-# introduit sa propre plateforme api_server ; notre diff = +403 : handlers
-# arm/reply/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream,
-# supports_push_send + override _send_with_retry ; /v1/reply = tour synchrone
-# borné pour les tiers — zéro toolset, sans état, sans mémoire).
+# introduit sa propre plateforme api_server ; notre diff = +265 : handlers
+# arm/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream,
+# supports_push_send + override _send_with_retry).
 # Reste allowlisté car c'est LE seam actif du contrat daemon↔fork — n'y toucher
 # QUE pour ce contrat, jamais pour patcher du comportement upstream.
 gateway/platforms/api_server.py
