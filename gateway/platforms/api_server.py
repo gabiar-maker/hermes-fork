@@ -2080,6 +2080,79 @@ class APIServerAdapter(BasePlatformAdapter):
             "status": "cleared" if existed else "absent",
         })
 
+    async def _handle_goal_control(self, request: "web.Request") -> "web.Response":
+        """POST /v1/goal-control — pause/resume a managed background mission (idempotent).
+
+        Jean-Billie managed surface: the portal asks to pause a mission ("mets la
+        mission en pause") or hand control back; the control daemon proxies this
+        loopback endpoint. Body ``{"conversationId": "mission:<uuid>", "action":
+        "pause"|"resume"}`` — the same stable handle the mission was armed with
+        (the goal lives under the key ``goal:<conversationId>``).
+
+        Unlike ``/v1/clear`` (destructive stop, status=cleared), this pair is
+        BOUNDED and REVERSIBLE at the level of the single goal: pause freezes the
+        goal loop (the per-turn continuation hook and the watchdog sweep both skip
+        paused goals), resume re-activates it with the turn budget PRESERVED
+        (``resume(reset_budget=False)`` — resuming means "keep going", never a
+        fresh allowance). Purely internal: freezing/relaunching the goal loop
+        sends NOTHING to a third party.
+
+        Best-effort/idempotent: acting on an absent mission returns 200 with
+        ``status="absent"``, never an error, and re-pausing/re-resuming is a
+        no-op echo. A mission already ``done`` or ``cleared`` also reports
+        ``absent``: ``/v1/clear`` keeps the row for audit ("both stop driving
+        it"), so resume must NEVER resurrect a stopped or finished mission.
+
+        Response ``200 {"goalId": conversationId, "status": "paused"|"resumed"|"absent"}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+
+        conversation_id = body.get("conversationId")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return web.json_response(_openai_error("Missing or invalid 'conversationId' field"), status=400)
+        conversation_id = conversation_id.strip()
+
+        action = body.get("action")
+        if action not in ("pause", "resume"):
+            return web.json_response(
+                _openai_error("Missing or invalid 'action' field (expected 'pause' or 'resume')"),
+                status=400,
+            )
+
+        try:
+            from hermes_cli.goals import GoalManager
+            manager = GoalManager(session_id=conversation_id)
+            if not manager.has_goal():
+                # No row, or already done/cleared: nothing left to control.
+                # Idempotent — and never resurrect a stopped/finished mission.
+                state = None
+            elif action == "pause":
+                state = manager.pause()
+            else:
+                state = manager.resume(reset_budget=False)
+        except Exception as exc:
+            logger.error(
+                "goal-control: failed to %s mission %s: %s", action, conversation_id, exc, exc_info=True
+            )
+            return web.json_response(
+                _openai_error("Failed to control mission", code="goal_control_failed"), status=502
+            )
+
+        if state is None:
+            status = "absent"
+        else:
+            status = "paused" if action == "pause" else "resumed"
+        return web.json_response({"goalId": conversation_id, "status": status})
+
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
         auth_err = self._check_auth(request)
@@ -5150,15 +5223,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             # Jean-Billie managed background missions: arm a mission (POST) + read-only goal-state surface
-            # (GET) + watchdog re-drive (POST) + stop a mission (POST), all proxied over mTLS by the
-            # control daemon for the client portal. See _handle_arm_message / _handle_goals_list /
-            # _handle_watchdog_tick / _handle_clear. /v1/reply is the bounded synchronous counterpart
-            # (third-party turns: no goal, no tools, no memory) — see _handle_reply.
+            # (GET) + watchdog re-drive (POST) + stop a mission (POST) + pause/resume a mission (POST),
+            # all proxied over mTLS by the control daemon for the client portal. See _handle_arm_message /
+            # _handle_goals_list / _handle_watchdog_tick / _handle_clear / _handle_goal_control.
+            # /v1/reply is the bounded synchronous counterpart (third-party turns: no goal, no tools,
+            # no memory) — see _handle_reply. By convention NONE of these managed endpoints is advertised
+            # in /v1/capabilities (loopback contract surface, not a public API).
             self._app.router.add_post("/v1/message", self._handle_arm_message)
             self._app.router.add_post("/v1/reply", self._handle_reply)
             self._app.router.add_get("/v1/goals", self._handle_goals_list)
             self._app.router.add_post("/v1/watchdog-tick", self._handle_watchdog_tick)
             self._app.router.add_post("/v1/clear", self._handle_clear)
+            self._app.router.add_post("/v1/goal-control", self._handle_goal_control)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
