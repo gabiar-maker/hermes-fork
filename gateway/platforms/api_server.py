@@ -1295,6 +1295,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
+        stateless: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1303,6 +1305,14 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        ``enabled_toolsets_override`` bypasses that resolution entirely when
+        not None — including the empty list, which agent_init honours as
+        "no toolsets at all" (its gates test ``is None``, not falsiness).
+        ``stateless`` builds an agent with no session DB (nothing persisted)
+        and ``skip_memory=True`` (the owner's long-term memory is neither
+        read nor written). Both exist for ``/v1/reply``: a turn triggered by
+        an unknown third party must not reach tools, sessions or memory.
 
         ``gateway_session_key`` is a stable per-channel identifier supplied
         by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
@@ -1388,7 +1398,10 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is not None:
+            enabled_toolsets = sorted(enabled_toolsets_override)
+        else:
+            enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = _current_max_iterations()
 
@@ -1410,7 +1423,8 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
+            session_db=None if stateless else self._ensure_session_db(),
+            skip_memory=stateless,
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
@@ -1879,6 +1893,121 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("Failed to arm mission", code="arm_failed"), status=502)
 
         return web.json_response({"goalId": conversation_id, "status": "armed"}, status=202)
+
+    # /v1/reply bounds. The timeout sits under the portal transport's 12 s
+    # (which itself sits inside the Meta webhook window): answering late is
+    # answering never, so the server gives up first and returns a clean 504.
+    _REPLY_TIMEOUT_SECONDS = 11.0
+    _REPLY_MAX_TEXT_CHARS = 8_000
+    _REPLY_MAX_HISTORY_TURNS = 40
+    _REPLY_MAX_HISTORY_CHARS = 24_000
+
+    async def _handle_reply(self, request: "web.Request") -> "web.Response":
+        """POST /v1/reply — one bounded, stateless reply turn (no goal, no tools, no memory).
+
+        Jean-Billie managed surface: the control daemon proxies this loopback endpoint over
+        mTLS. Serves turns triggered by an unknown THIRD PARTY (WhatsApp webhook, inbound
+        phone standard): the portal posts ``{text, conversationId, context}`` and expects a
+        synchronous ``200 {"reply": …}``. This is the counterpart of ``POST /v1/message``,
+        which arms an autonomous background mission — the collision this route closes: a
+        stranger's message must never become a mission of the box (DECISIONS §A.3).
+
+        Bounded by construction:
+
+        * **zero toolsets** — ``enabled_toolsets_override=[]``; the answer comes from the
+          SOUL identity slot alone (the "what you may say externally" boundary). A third
+          party can reach neither memory, nor skills, nor cron, nor messaging.
+        * **stateless** — no session row is persisted (``session_db=None``) and the owner's
+          long-term memory is neither read nor written (``skip_memory=True``). The
+          conversation thread lives with the CALLER, who relays recent turns via
+          ``context.history`` (list of ``{"role": "user"|"assistant", "content": str}``).
+        * **latency/volume guarded** — hard ``_REPLY_TIMEOUT_SECONDS`` timeout → 504, and
+          the concurrent-run cap shared with the chat paths → 429 when saturated. On
+          timeout the executor thread is not interrupted (same trade-off as the chat
+          paths); its late result is discarded.
+
+        ``conversationId`` is required for log correlation and contract symmetry with
+        ``/v1/message``; the server intentionally keys nothing on it (stateless).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = body.get("text")
+        conversation_id = body.get("conversationId")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing or invalid 'text' field"), status=400)
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return web.json_response(_openai_error("Missing or invalid 'conversationId' field"), status=400)
+        text = text.strip()
+        conversation_id = conversation_id.strip()
+        if len(text) > self._REPLY_MAX_TEXT_CHARS:
+            return web.json_response(_openai_error("'text' too large"), status=400)
+
+        context = body.get("context")
+        if context is None:
+            context = {}
+        if not isinstance(context, dict):
+            return web.json_response(_openai_error("Invalid 'context' field"), status=400)
+
+        raw_history = context.get("history") or []
+        if not isinstance(raw_history, list) or len(raw_history) > self._REPLY_MAX_HISTORY_TURNS:
+            return web.json_response(_openai_error("Invalid 'context.history' field"), status=400)
+        history: List[Dict[str, str]] = []
+        history_chars = 0
+        for entry in raw_history:
+            role = entry.get("role") if isinstance(entry, dict) else None
+            content = entry.get("content") if isinstance(entry, dict) else None
+            if role not in ("user", "assistant") or not isinstance(content, str):
+                return web.json_response(_openai_error("Invalid 'context.history' entry"), status=400)
+            history_chars += len(content)
+            if history_chars > self._REPLY_MAX_HISTORY_CHARS:
+                return web.json_response(_openai_error("'context.history' too large"), status=400)
+            history.append({"role": role, "content": content})
+
+        try:
+            result, _usage = await asyncio.wait_for(
+                self._run_agent(
+                    user_message=text,
+                    conversation_history=history,
+                    session_id=None,
+                    gateway_session_key=None,
+                    enabled_toolsets_override=[],
+                    stateless=True,
+                ),
+                timeout=self._REPLY_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "reply turn timed out (%ss) for %s", self._REPLY_TIMEOUT_SECONDS, conversation_id
+            )
+            return web.json_response(
+                _openai_error("Reply turn timed out", code="reply_timeout"), status=504
+            )
+        except Exception as exc:
+            logger.error("reply turn failed for %s: %s", conversation_id, exc, exc_info=True)
+            return web.json_response(
+                _openai_error("Reply turn failed", code="reply_failed"), status=502
+            )
+
+        reply = (result or {}).get("final_response")
+        if not isinstance(reply, str) or not reply.strip():
+            # Fail-closed: the portal treats a missing reply as a failure and
+            # falls back honestly — never fabricate a placeholder here.
+            return web.json_response(
+                _openai_error("Empty reply", code="reply_empty"), status=502
+            )
+
+        return web.json_response({"reply": reply})
 
     async def _handle_watchdog_tick(self, request: "web.Request") -> "web.Response":
         """POST /v1/watchdog-tick — re-drive stuck managed missions (empty body).
@@ -4263,6 +4392,8 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
+        stateless: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4299,6 +4430,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    enabled_toolsets_override=enabled_toolsets_override,
+                    stateless=stateless,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -5019,8 +5152,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # Jean-Billie managed background missions: arm a mission (POST) + read-only goal-state surface
             # (GET) + watchdog re-drive (POST) + stop a mission (POST), all proxied over mTLS by the
             # control daemon for the client portal. See _handle_arm_message / _handle_goals_list /
-            # _handle_watchdog_tick / _handle_clear.
+            # _handle_watchdog_tick / _handle_clear. /v1/reply is the bounded synchronous counterpart
+            # (third-party turns: no goal, no tools, no memory) — see _handle_reply.
             self._app.router.add_post("/v1/message", self._handle_arm_message)
+            self._app.router.add_post("/v1/reply", self._handle_reply)
             self._app.router.add_get("/v1/goals", self._handle_goals_list)
             self._app.router.add_post("/v1/watchdog-tick", self._handle_watchdog_tick)
             self._app.router.add_post("/v1/clear", self._handle_clear)
