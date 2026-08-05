@@ -1959,7 +1959,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(context, dict):
             return web.json_response(_openai_error("Invalid 'context' field"), status=400)
 
-        raw_history = context.get("history") or []
+        # ABSENT is not MALFORMED — the very distinction ``context`` makes three lines above.
+        # A bare ``or []`` swallowed every FALSY value (``""``, ``0``, ``False``, ``{}``) into
+        # an empty history BEFORE the type check below could reject it: the caller believed it
+        # had relayed a conversation, the agent answered without one, and nothing said so.
+        # Only ``None``/absent means "no history"; anything else that is not a list is a 400.
+        raw_history = context.get("history")
+        if raw_history is None:
+            raw_history = []
         if not isinstance(raw_history, list) or len(raw_history) > self._REPLY_MAX_HISTORY_TURNS:
             return web.json_response(_openai_error("Invalid 'context.history' field"), status=400)
         history: List[Dict[str, str]] = []
