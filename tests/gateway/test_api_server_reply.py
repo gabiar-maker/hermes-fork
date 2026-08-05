@@ -117,6 +117,22 @@ class TestReplyNominal:
         assert kwargs["conversation_history"] == history
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("context", [None, {}, {"history": None}, {"history": []}])
+    async def test_absent_history_is_accepted_as_empty(self, hermes_home, context):
+        """ABSENT stays legitimate: no history means no history, not a malformed request.
+
+        The counterpart of the 400 cases below — the fix must not turn a caller who simply
+        has nothing to relay (a first message, a channel without a thread) into an error.
+        """
+        adapter = _make_adapter()
+        body = dict(VALID_BODY) if context is None else {**VALID_BODY, "context": context}
+        async with TestClient(TestServer(_reply_app(adapter))) as cli:
+            resp = await cli.post("/v1/reply", json=body)
+            assert resp.status == 200
+
+        assert adapter._run_agent.await_args.kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
     async def test_extra_context_fields_are_tolerated(self, hermes_home):
         """The portal transport already sends firstName/casquettes/mode — the
         route must accept the existing envelope shape without a contract bump."""
@@ -157,6 +173,14 @@ class TestReplyValidation:
             {**VALID_BODY, "context": {"history": [{"role": "system", "content": "x"}]}},
             {**VALID_BODY, "context": {"history": [{"role": "user", "content": 42}]}},
             {**VALID_BODY, "context": {"history": ["nope"]}},
+            # FALSY malformed values were SWALLOWED into an empty history by a bare
+            # ``or []``: the agent answered with no context while the caller believed it had
+            # relayed one, and nothing said so. Note that every pre-existing case above
+            # happens to be TRUTHY — which is exactly why the hole survived this long.
+            {**VALID_BODY, "context": {"history": ""}},
+            {**VALID_BODY, "context": {"history": 0}},
+            {**VALID_BODY, "context": {"history": False}},
+            {**VALID_BODY, "context": {"history": {}}},
         ],
     )
     async def test_malformed_bodies_are_400(self, hermes_home, body):
