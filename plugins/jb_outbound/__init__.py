@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def register(ctx) -> None:
     """Point d'entrée appelé par le PluginManager de Hermes au chargement."""
-    from . import listener, delegation_activity, produce, request_connection
+    from . import listener, delegation_activity, produce, request_connection, web_linkup
     from .middleware import make_middleware
 
     ctx.register_middleware("tool_execution", make_middleware())
@@ -78,6 +78,13 @@ def register(ctx) -> None:
             "extra_body": {},
         },
     )
+    # Fournisseur web « linkup » : recherche et lecture de page RELAYÉES par le control daemon. Le
+    # workload ne détient aucune clé — elle vit au coffre de la plateforme, et le relais est sa seule
+    # sortie autorisée. Enregistré ICI (et non dans `plugins/web/<nom>/`) pour que TOUTE la divergence
+    # du fork reste dans ce répertoire, comme l'exige l'allowlist du dépôt : la découverte de plugins
+    # est générique, le fournisseur atterrit dans le même registre que ceux de `plugins/web/*`.
+    # `is_available()` est faux hors box (JB_DRAFT_ADDR absent) → en CLI local, Hermes est inchangé.
+    ctx.register_web_search_provider(web_linkup.JbRelayWebSearchProvider())
     listener.start()  # idempotent, loopback-only, no-op si JB_DECISION_PUSH_URL absent
     logger.info(
         "jb_outbound: interception d'envoi active (proposition → validation → exécution)"
