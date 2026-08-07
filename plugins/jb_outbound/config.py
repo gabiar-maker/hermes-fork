@@ -40,6 +40,27 @@ def produce_url() -> str:
     return f"http://{_draft_addr()}/v1/produce"
 
 
+def search_url() -> str:
+    """URL où POSTer une RECHERCHE web relayée par le plan de contrôle (cf. web_linkup.py)."""
+    return f"http://{_draft_addr()}/v1/search"
+
+
+def fetch_url() -> str:
+    """URL où POSTer une LECTURE de page relayée par le plan de contrôle (cf. web_linkup.py)."""
+    return f"http://{_draft_addr()}/v1/fetch"
+
+
+def draft_addr_present() -> bool:
+    """Vrai si le bundle a posé l'adresse du daemon — donc « on tourne sur une box ».
+
+    Distinct d'`enabled()` VOLONTAIREMENT : `enabled()` interroge `JB_DECISION_PUSH_URL`, qui commande
+    la boucle de PROPOSITION (le listener de décisions). Le relais web, lui, n'a besoin que d'un
+    daemon à qui parler. Confondre les deux ferait dépendre la recherche d'une capacité sans rapport,
+    et la couperait le jour où l'une des deux évoluerait seule.
+    """
+    return bool(os.getenv("JB_DRAFT_ADDR"))
+
+
 def _push_url() -> str:
     return os.getenv("JB_DECISION_PUSH_URL", _DEFAULT_PUSH_URL).strip() or _DEFAULT_PUSH_URL
 
