@@ -166,6 +166,9 @@ def test_register_enregistre_l_outil(on_box):
         def register_auxiliary_task(self, key, **kw):
             calls["aux"].append(key)
 
+        def register_web_search_provider(self, *a, **k):
+            pass
+
     jb_outbound.register(FakeCtx())
     names = [t["name"] for t in calls["tools"]]
     assert "creer_support" in names

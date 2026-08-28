@@ -86,6 +86,13 @@ def register(ctx) -> None:
     # `is_available()` est faux hors box (JB_DRAFT_ADDR absent) → en CLI local, Hermes est inchangé.
     ctx.register_web_search_provider(web_linkup.JbRelayWebSearchProvider())
     listener.start()  # idempotent, loopback-only, no-op si JB_DECISION_PUSH_URL absent
+    # Arrêt propre au déchargement du plugin (cache par profil / `discover_plugins(force=True)`,
+    # Hermes ≥ 0.20) : sans cela le thread HTTP survivrait sur l'ancien module, port tenu.
+    # `on_unload` n'existe PAS en 0.18.2 (base actuelle du fork) → garde de compatibilité, le
+    # plugin doit charger sur les deux versions. `listener.stop` est idempotent (no-op hors box).
+    on_unload = getattr(ctx, "on_unload", None)
+    if callable(on_unload):
+        on_unload(listener.stop)
     logger.info(
         "jb_outbound: interception d'envoi active (proposition → validation → exécution)"
     )

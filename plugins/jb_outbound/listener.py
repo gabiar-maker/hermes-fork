@@ -4,6 +4,11 @@ Thread HTTP léger (stdlib) démarré au chargement du plugin. Bind STRICTEMENT 
 0.0.0.0) — garde-fou symétrique de `requireLoopbackURL` côté daemon Go. Reçoit les `DecisionItem`
 poussées par le daemon et délègue au replay. Best-effort : un échec de bind (port déjà pris =
 déjà démarré) est avalé pour rester idempotent.
+
+Arrêt propre (`stop()`) : enregistré via `ctx.on_unload` quand le cœur l'offre (Hermes ≥ 0.20,
+cache des plugins par profil / rechargement forcé). Sans cela, le thread `jb-outbound-listener`
+survivrait sur l'ANCIEN module après un rechargement, port tenu, et le nouveau module ne pourrait
+plus binder (le « déjà pris » serait pris pour « déjà démarré », à tort).
 """
 
 from __future__ import annotations
@@ -12,11 +17,13 @@ import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _started = False
+_server: Optional[ThreadingHTTPServer] = None
 _lock = threading.Lock()
 
 
@@ -55,7 +62,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def start() -> None:
     """Démarre le listener (idempotent, loopback-only, no-op hors box Jean-Billie)."""
-    global _started
+    global _started, _server
     from . import config
 
     if not config.enabled():
@@ -79,5 +86,29 @@ def start() -> None:
         threading.Thread(
             target=server.serve_forever, daemon=True, name="jb-outbound-listener"
         ).start()
+        _server = server
         _started = True
         logger.info("jb_outbound: listener de décisions à l'écoute sur %s:%s", host, port)
+
+
+def stop() -> None:
+    """Arrête le listener (idempotent) : `shutdown()` + `server_close()`, puis `_started = False`.
+
+    Appelé par le cœur au déchargement du plugin (`ctx.on_unload`). Sans serveur démarré, no-op.
+    Le verrou est tenu pendant tout l'arrêt : un `start()` concurrent attend que le port soit
+    libéré et peut donc re-binder au lieu de se croire « déjà démarré ».
+    """
+    global _started, _server
+
+    with _lock:
+        server, _server = _server, None
+        _started = False
+        if server is None:
+            return
+        try:
+            server.shutdown()  # arrête serve_forever() (bloque jusqu'à la sortie de la boucle)
+            server.server_close()  # libère le socket → un start() ultérieur peut re-binder
+        except Exception as exc:  # best-effort : ne jamais faire échouer un déchargement
+            logger.warning("jb_outbound: arrêt du listener de décisions imparfait : %s", exc)
+            return
+    logger.info("jb_outbound: listener de décisions arrêté")

@@ -75,6 +75,9 @@ def test_register_enregistre_l_outil(on_box):
         def register_auxiliary_task(self, key, **kw):
             calls["aux"].append({"key": key, **kw})
 
+        def register_web_search_provider(self, *a, **k):
+            pass
+
     jb_outbound.register(FakeCtx())
     names = [t["name"] for t in calls["tools"]]
     assert "request_tool_connection" in names
@@ -110,6 +113,9 @@ def test_register_declare_l_aux_task_goal_judge(on_box):
 
         def register_auxiliary_task(self, key, **kw):
             calls["aux"].append({"key": key, **kw})
+
+        def register_web_search_provider(self, *a, **k):
+            pass
 
     jb_outbound.register(FakeCtx())
     assert [a["key"] for a in calls["aux"]] == ["goal_judge"]
