@@ -152,11 +152,17 @@ def make_middleware() -> Callable[..., Any]:
         except Exception as exc:
             # FAIL-CLOSED : sans ce filet, le cœur exécuterait l'outil (fail-open) et l'envoi
             # partirait. On journalise le type seulement — jamais les arguments (contenu du client).
-            logger.error(
-                "jb_outbound: vérification interne échouée sur %s (%s) — envoi BLOQUÉ, rien n'est parti.",
-                tool_name,
-                type(exc).__name__,
-            )
+            # La journalisation est elle-même protégée : si elle levait (handler défaillant,
+            # `logging.raiseExceptions`), l'exception sortirait de la callback et rouvrirait le
+            # fail-open du cœur. Le retour bloquant est INCONDITIONNEL.
+            try:
+                logger.error(
+                    "jb_outbound: vérification interne échouée sur %s (%s) — envoi BLOQUÉ, rien n'est parti.",
+                    tool_name,
+                    type(exc).__name__,
+                )
+            except Exception:
+                pass
             return _blocked_on_internal_failure()
 
         if outcome is None:
