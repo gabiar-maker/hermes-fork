@@ -71,16 +71,10 @@ def current(session_id: Optional[str] = None, turn_id: Optional[str] = None) -> 
     """Contexte d'attribution du job cron courant, ou ``None`` hors job cron (chat libre).
 
     Recherche par ``session_id`` (transmis par le cœur au middleware), puis par ``turn_id`` (alias,
-    survit à la rotation de session), puis par la ContextVar ``HERMES_SESSION_ID`` du cœur (appelant
-    qui n'aurait rien transmis). Renvoie une COPIE : le registre n'est jamais muté par un lecteur.
+    survit à la rotation de session). Renvoie une COPIE : le registre n'est jamais muté par un lecteur.
     """
     with _lock:
         entry = _lookup_locked(session_id, turn_id)
-    if entry is None and not session_id and not turn_id:
-        ambient = _ambient_session_id()
-        if ambient:
-            with _lock:
-                entry = _lookup_locked(ambient, None)
     return dict(entry[0]) if entry else None
 
 
@@ -199,16 +193,6 @@ def _reset_for_tests() -> None:
     with _lock:
         _by_session.clear()
         _by_turn.clear()
-
-
-def _ambient_session_id() -> Optional[str]:
-    """``HERMES_SESSION_ID`` du contexte courant (ContextVar du cœur), best-effort."""
-    try:
-        from gateway.session_context import get_session_env
-
-        return get_session_env("HERMES_SESSION_ID", "") or None
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------

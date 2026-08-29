@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-_RECIPIENT_KEYS = ("recipient_email", "recipient", "to", "to_email", "email", "chat_id", "channel")
+# `target` = clé RÉELLE de send_message (« plateforme:cible », tools/send_message_tool.py) : sans elle,
+# le champ « à » de la proposition restait vide (relecture F2, 2026-08-29).
+_RECIPIENT_KEYS = ("recipient_email", "recipient", "to", "to_email", "email", "target", "chat_id", "channel")
 _SUBJECT_KEYS = ("subject", "title", "headline")
 _BODY_KEYS = ("body", "text", "content", "message", "caption")
 

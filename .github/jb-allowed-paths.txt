@@ -40,7 +40,7 @@
 # Ces fichiers restent HORS allowlist : les toucher exige « jb-core-approved ».
 # Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à CHAQUE refusion amont.
 #
-#   gateway/run.py (+201 −2)
+#   gateway/run.py (+211 −2)
 #       Watchdog des missions managées : constante stale + resolver config
 #       (goals.watchdog_stale_seconds, clé HORS DEFAULT_CONFIG, fallback local)
 #       + _watchdog_sweep (re-drive à froid via handle_message, POST
@@ -53,9 +53,15 @@
 #       Raison : aucun hook de maintenance/périodique natif côté plugins ;
 #       l'amont JETTE les continuations périmées, il ne re-drive pas à froid.
 #       Seam candidat (S5 §B.1) : `ctx.inject_message` + PR amont
-#       `on_gateway_tick` (~20 lignes) → dette run.py = 0. La garde
-#       `supports_push_send` de _send_goal_status_notice est RÉSORBÉE (F2-2 :
-#       silence obtenu dans `send()` de APIServerAdapter, fichier allowlisté).
+#       `on_gateway_tick` (~20 lignes) → dette run.py = 0.
+#       + garde `supports_push_send` dans _send_goal_status_notice : un
+#       adaptateur requête/réponse (api_server) n'a pas de canal push, l'avis
+#       de statut est sauté au lieu de logger un warning à CHAQUE tour.
+#       LOT F2-2 ABANDONNÉ (relecture 2026-08-29) : la surcharge `send()`
+#       (succès silencieux par chat_id managé) ouvrait un faux « executed » —
+#       un send_message vers api_server approuvé est rejoué par replay.py →
+#       registry.dispatch → adapter.send() direct. La garde reste ici ; PR
+#       amont proposée : réutiliser le jumeau natif `supports_async_delivery`.
 #   tools/delegate_tool.py (+35 −2)
 #       Plumbing du param « department » (schéma single + tasks[] à côté du
 #       nouvel `output_schema` amont, kwargs des hooks subagent_start/stop +
@@ -87,18 +93,15 @@
 #   docker-compose.windows.yml (+10 −2)  Compose Windows pointé sur l'image
 #                                    FORK (ghcr.io/gabiar-maker/hermes).
 #
-# TOTAL sous label (7 fichiers upstream) : +468 −6 (était +550 −7 avant F2 :
-# cron/scheduler.py −72/+1 résorbé, run.py −10) + 2 fichiers jb-owned NEUFS
-# (284 l.).
+# TOTAL sous label (7 fichiers upstream) : +478 −6 (était +550 −7 avant F2 :
+# cron/scheduler.py −72/+1 résorbé) + 2 fichiers jb-owned NEUFS (284 l.).
 # Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
-#   gateway/platforms/api_server.py (+533 −2 : 6 handlers managés + list_goal_meta
-#   + authorization_is_upstream + supports_push_send (documentation) +
-#   `send()` = succès SILENCIEUX pour une conversation managée
-#   (`_is_managed_conversation` : cache posé par POST /v1/message, puis ligne
-#   `goal:<conversationId>` du store — reconnaît aussi les re-drives après
-#   redémarrage), échec contractuel pour tout autre appelant (un
-#   send_message vers cette plateforme n'est jamais « livré ») +
-#   _send_with_retry ; 0.20.6 : nos 6 routes sont des TUPLES de
+#   gateway/platforms/api_server.py (+487 −2 : 6 handlers managés + list_goal_meta
+#   + authorization_is_upstream + supports_push_send + _send_with_retry ;
+#   `send()` reste l'ÉCHEC CONTRACTUEL amont — jamais de succès factice, cf.
+#   lot F2-2 abandonné ; défense en profondeur côté plugin : classify.py
+#   NO_DELIVERY_PLATFORMS bloque tout send_message visant api_server ;
+#   0.20.6 : nos 6 routes sont des TUPLES de
 #   `_http_route_table()` (miroir /p/{profile} gratuit), `_create_agent`/
 #   `_run_agent` portent nos 2 kwargs `enabled_toolsets_override`/`stateless`
 #   en plus des kwargs amont session_model/confirmed_runtime_lock/
@@ -110,7 +113,7 @@
 #   l'absence de la SOURCE tient ; sync_skills tolère l'absence, prouvé par
 #   tests/test_jb_skill_hermes_agent_absent.py)
 #   · pyproject.toml (+10 −3 : pytest-timeout + addopts --timeout).
-# Dette cœur consolidée (10 fichiers upstream touchés) : +1053 −12 vs v2026.8.27
+# Dette cœur consolidée (10 fichiers upstream touchés) : +1017 −12 vs v2026.8.27
 # (était +1078 −13 sur 11 fichiers avant F2 ; +686 −11 vs v2026.7.7.2).
 #
 # VIGILANCE à chaque refusion (relecture F1, 2026-08-29) :
@@ -164,9 +167,8 @@
 #     H14    scripts/release.py EUX intégralement — patch cœur SUPPRIMÉ (nos 2
 #                              e-mails sont dans contributors/emails/ amont).
 #     H15    test_goal_status_notice.py  nos 2 tests gardés, test de base
-#                              élagué par l'amont jeté ; réécrits en F2-2 (le
-#                              silence est prouvé sur le VRAI APIServerAdapter,
-#                              avec contrôle positif : chat non managé → WARNING).
+#                              élagué par l'amont jeté (version F1 conservée
+#                              après l'abandon du lot F2-2).
 #     H16-H20 delegate_tool.py UNIONS (docstring, schémas department +
 #                              output_schema) ; H17 effective_department
 #                              réinséré ; H18 kwargs jb dans
@@ -211,9 +213,6 @@
 #                         posé par le middleware pour survivre à la rotation
 #                         de session — F2-1, 2026-08-29. Perdu et documenté :
 #                         signaux des jobs qui échouent AVANT l'agent.)
-#   gateway/run.py garde supports_push_send (→ `send()` de APIServerAdapter,
-#                         succès silencieux pour une conversation managée —
-#                         F2-2, 2026-08-29)
 #   scripts/release.py   (AUTHOR_MAP → contributors/emails/ amont, fusion 0.20.6)
 #   toolsets.py          (request_tool_connection → register_tool du plugin, F2)
 #   hermes_state.py      (list_meta_prefix → list_goal_meta, api_server.py, F2 ;
@@ -231,7 +230,10 @@
 #      → department sans patch de tools/delegate_tool.py.
 #   3. « prompt: emit HERMES_AGENT_HELP_GUIDANCE only when the hermes-agent
 #      skill is present » → ferme la fuite résiduelle du prompt système.
-#   4. « mcp: `hermes mcp test --url` ad hoc (read-only JSON) » → retire notre
+#   4. « gateway: skip goal status notice when adapter has no push channel
+#      (reuse supports_async_delivery) » → retire notre garde de run.py
+#      (lot F2-2 abandonné : pas de succès factice côté adaptateur).
+#   5. « mcp: `hermes mcp test --url` ad hoc (read-only JSON) » → retire notre
 #      sonde une fois le daemon basculé (ou la commande plugin suffit).
 #
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »

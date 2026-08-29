@@ -92,6 +92,17 @@ def _decide(
             }
         )
 
+    # Destination SANS canal de livraison (api_server) : bloqué, jamais proposé — une proposition
+    # approuvée serait rejouée et marquée « executed » sans que rien ne parte (cf. classify.py).
+    if classify.has_no_delivery_channel(tool_name, args):
+        logger.warning("jb_outbound: envoi vers une destination sans canal de livraison BLOQUÉ : %s", tool_name)
+        return _result(
+            {
+                "status": "blocked",
+                "message": "Cette destination n'a pas de canal d'envoi. Rien n'a été envoyé.",
+            }
+        )
+
     # PROPOSE : court-circuit → proposition.
     jb_id = uuid.uuid4().hex
     draft = mapping.to_draft(tool_name, args)
