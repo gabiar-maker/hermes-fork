@@ -10,8 +10,11 @@ notre callback ; l'appeler ferme le serveur (port libéré) et un second `start(
 
 from __future__ import annotations
 
+import json
 import socket
 import sys
+import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,7 @@ if str(_PLUGINS_DIR) not in sys.path:
 
 import jb_outbound  # noqa: E402
 import jb_outbound.listener as listener  # noqa: E402
+import jb_outbound.replay as replay  # noqa: E402
 
 _PORT = 18446  # distinct du e2e (18444) : les deux suites peuvent tourner dans le même process
 
@@ -100,6 +104,50 @@ def test_sans_on_unload_le_plugin_charge_quand_meme():
 
     assert listener._started is True
     assert _port_open(_PORT)
+
+
+def test_stop_n_attend_pas_un_rejeu_lent_en_cours(monkeypatch):
+    """`do_POST` répond 200 puis rejoue l'envoi (appel externe non borné). Avec le défaut
+    `block_on_close=True`, `server_close()` joindrait ce thread : `stop()` (donc `on_unload`)
+    resterait bloqué, verrou tenu. On prouve que `stop()` rend la main en < 2 s, port libéré,
+    pendant qu'un rejeu est encore bloqué — puis on libère le rejeu."""
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_replay(_decision):
+        entered.set()
+        release.wait(10)
+
+    monkeypatch.setattr(replay, "handle_decision", slow_replay)
+    listener.start()
+    assert _port_open(_PORT)
+
+    def post_decision():
+        data = json.dumps({"id": "prop-lent", "payload": {"jb_id": "x"}}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{_PORT}/jb/decision", data=data,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=15).read()
+        except Exception:
+            pass  # la connexion se ferme quand le handler rend la main : sans importance ici
+
+    poster = threading.Thread(target=post_decision, daemon=True)
+    poster.start()
+    assert entered.wait(2.0), "le handler doit être entré dans le rejeu (bloqué)"
+
+    # stop() dans un thread : sur une régression (join des requêtes), le test ÉCHOUE au lieu de pendre.
+    stopper = threading.Thread(target=listener.stop, daemon=True)
+    stopper.start()
+    stopper.join(2.0)
+    try:
+        assert not stopper.is_alive(), "stop() doit rendre la main sans attendre le rejeu en cours"
+        assert listener._started is False
+        assert not _port_open(_PORT), "le port est libéré pendant que le rejeu continue"
+    finally:
+        release.set()  # libère le handler (et, en cas de régression, le stop() bloqué)
+        stopper.join(5.0)
+        poster.join(5.0)
 
 
 def test_stop_est_idempotent_et_sans_serveur_no_op():

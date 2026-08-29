@@ -27,6 +27,23 @@ _server: Optional[ThreadingHTTPServer] = None
 _lock = threading.Lock()
 
 
+class _Server(ThreadingHTTPServer):
+    """Serveur loopback dont l'arrêt n'attend PAS les requêtes en cours.
+
+    `do_POST` répond 200 puis rejoue l'envoi réel (`replay.handle_decision` → `registry.dispatch`,
+    appel externe sans borne). `ThreadingMixIn.server_close()` JOINT les threads de requête qu'il
+    suit (`block_on_close=True` par défaut) : un `stop()` déclenché par `on_unload` pendant un rejeu
+    lent bloquerait, verrou tenu, tout `start()` concurrent. Les deux attributs ferment ce risque
+    explicitement : threads de requête DÉMONS (le rejeu en cours va à son terme, le processus ne
+    l'attend pas — CPython ne suit d'ailleurs que les threads non démons, détail privé de
+    `socketserver._Threads.append`) et `block_on_close=False` (aucun join à la fermeture, quel que
+    soit ce détail d'implémentation).
+    """
+
+    daemon_threads = True
+    block_on_close = False
+
+
 class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 (API imposée par BaseHTTPRequestHandler)
         from . import config, replay
@@ -78,7 +95,7 @@ def start() -> None:
             )
             return
         try:
-            server = ThreadingHTTPServer((host, port), _Handler)
+            server = _Server((host, port), _Handler)
         except OSError as exc:
             # Port déjà pris → on suppose qu'une instance écoute déjà (idempotent).
             logger.info("jb_outbound: listener non démarré (%s:%s déjà pris ? %s)", host, port, exc)
@@ -107,7 +124,7 @@ def stop() -> None:
             return
         try:
             server.shutdown()  # arrête serve_forever() (bloque jusqu'à la sortie de la boucle)
-            server.server_close()  # libère le socket → un start() ultérieur peut re-binder
+            server.server_close()  # libère le socket (sans joindre les rejeux en cours, cf. _Server)
         except Exception as exc:  # best-effort : ne jamais faire échouer un déchargement
             logger.warning("jb_outbound: arrêt du listener de décisions imparfait : %s", exc)
             return

@@ -124,6 +124,19 @@ def test_panne_interne_bloque_sans_executer_l_outil(posts, monkeypatch, caplog, 
     assert _SECRET_BODY not in message and "42" not in message
 
 
+def test_meme_si_la_journalisation_leve_le_resultat_reste_bloquant(monkeypatch):
+    """Le `logger.error` du filet est lui-même protégé : s'il levait (handler défaillant,
+    `logging.raiseExceptions`), l'exception sortirait de la callback → fail-open du cœur."""
+    monkeypatch.setattr(classify, "classify", _raise_boom)
+    monkeypatch.setattr(middleware.logger, "error", _raise_boom)
+    nxt = _NextCall()
+
+    out = middleware.make_middleware()(tool_name="send_message", args=dict(_SEND_ARGS), next_call=nxt)
+
+    _assert_blocked(out)
+    assert nxt.calls == []
+
+
 def test_panne_du_store_apres_depot_impossible_bloque_aussi(monkeypatch):
     """Cas imbriqué : le dépôt échoue (chemin `error` existant) ET `store.mark` lève dans le
     `except` → avant, l'exception sortait de la callback (fail-open du cœur)."""
