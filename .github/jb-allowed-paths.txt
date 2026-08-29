@@ -32,92 +32,140 @@
 # git diff --name-status).
 #
 # ----------------------------------------------------------------------------
-# DETTE CŒUR DÉCLARÉE (état F2, 2026-07-09) — diff exact vs v2026.7.7.2.
+# DETTE CŒUR DÉCLARÉE (fusion v2026.8.27, 2026-08-29) — diff exact vs v2026.8.27
+# (Hermes 0.20.6, publiée 2026-08-27). Chiffres = `git diff --stat v2026.8.27 --
+# <fichier>` APRÈS résolution des 20 hunks (rapport S1, base de contexte
+# « Upstream Hermes 0.20 » du monorepo, tasks/lanes/, 2026-08-28).
 # Ces fichiers restent HORS allowlist : les toucher exige « jb-core-approved ».
-# Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à chaque rebase mensuel.
+# Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à CHAQUE refusion amont.
 #
-#   gateway/run.py (+209 −2)
+#   gateway/run.py (+211 −2)
 #       Watchdog des missions managées : constante stale + resolver config
 #       (goals.watchdog_stale_seconds, clé HORS DEFAULT_CONFIG, fallback local)
 #       + _watchdog_sweep (re-drive à froid via handle_message, POST
-#       /v1/watchdog-tick) ; ancre conversationId (_goal_anchor_for_source +
-#       2 points de câblage) pour survivre à la rotation de session.
-#       Raison : aucun hook de maintenance/périodique natif côté plugins.
-#       + garde `supports_push_send` dans _send_goal_status_notice (+10,
-#       2026-08-07) : un adaptateur requête/réponse (api_server) n'a pas de
-#       canal push, l'avis de statut de mission est sauté au lieu de logger
-#       un warning à CHAQUE tour (errors.log = source des logs cockpit).
-#       Candidat à l'upstreaming au prochain rebase (défaut fail-open
-#       getattr(…, True) : comportement amont inchangé partout ailleurs).
-#   cron/scheduler.py (+52 −1)
+#       /v1/watchdog-tick ; +3 en 0.20.6 : warm-up `_warm_goals_session_db`
+#       amont avant lecture, même contrat que les managers goal/heartbeat) ;
+#       ancre conversationId (_goal_anchor_for_source + 2 points de câblage)
+#       pour survivre à la rotation de session — l'amont 0.20.6 migre le goal
+#       à la compression (migrate_goal_to_session), l'ancre reste pour le
+#       handle STABLE du daemon (goalId = conversationId).
+#       Raison : aucun hook de maintenance/périodique natif côté plugins ;
+#       l'amont JETTE les continuations périmées, il ne re-drive pas à froid.
+#       + garde `supports_push_send` dans _send_goal_status_notice : un
+#       adaptateur requête/réponse (api_server) n'a pas de canal push, l'avis
+#       de statut est sauté au lieu de logger un warning à CHAQUE tour.
+#       Candidat PR amont (jumeau natif : `supports_async_delivery`).
+#   cron/scheduler.py (+72 −1)
 #       Wrapper run_job → hooks d'attribution jb (job_context), best-effort,
-#       stock sans plugin. Raison : aucun hook cycle-de-vie cron natif ;
-#       candidat n°1 à une PR upstream pre/post_cron_job (différé post-F2).
+#       stock sans plugin ; le run_job amont est renommé _run_job_impl et le
+#       wrapper porte la SIGNATURE AMONT COMPLÈTE (defer_agent_teardown,
+#       extra_prompt, cancel_event — 0.20.6) : en oublier un = TypeError au
+#       premier cron (test-piège tests/test_jb_merge_0206.py).
+#       Raison : toujours aucun hook cycle-de-vie cron dans VALID_HOOKS ;
+#       résorbable via on_session_start/on_session_end(platform == "cron") —
+#       convention, pas contrat (S1 §2.E) — différé après fusion.
 #   tools/delegate_tool.py (+35 −2)
-#       Plumbing du param « department » (schéma + kwargs des hooks
-#       subagent_start/stop + tag de l'agent enfant) — consommé par le plugin
-#       (delegation_activity). Additif au tool natif.
+#       Plumbing du param « department » (schéma single + tasks[] à côté du
+#       nouvel `output_schema` amont, kwargs des hooks subagent_start/stop +
+#       tag de l'agent enfant) — consommé par le plugin (delegation_activity).
+#       0.20.6 : l'amont a extrait `_finalize_child_results` ; nos 2 kwargs
+#       (child_subagent_id, child_department) y sont réinsérés (test-piège).
 #   hermes_cli/mcp_config.py (+44) et hermes_cli/subcommands/mcp.py (+16)
 #       Sous-commande read-only « hermes mcp probe » (sonde MCP du fleet
-#       daemon, stdout JSON, zéro écriture). Raison : register_cli_command
-#       natif = commande top-level (changement d'appel côté daemon pour zéro
-#       gain) ; ré-évaluer au rebase.
-#   scripts/release.py (+2)         AUTHOR_MAP (2 auteurs upstream).
+#       daemon, stdout JSON, zéro écriture). `hermes mcp test` amont prend un
+#       NOM configuré, pas `--url` → toujours justifié ; NON exercé sous
+#       mcp 2.0 / httpx2 (réserve S1).
 #   .github/workflows/build-push.yml (+148, jb-owned)  CI image GHCR.
-#   uv.lock (+14)                    Lockfile (suivit pyproject) — sous label
-#                                    à dessein (surface supply-chain).
+#   uv.lock (+14)                    Lockfile (suit pyproject : entrée
+#                                    pytest-timeout) — sous label à dessein
+#                                    (surface supply-chain). `uv lock --check`
+#                                    vert le 2026-08-29.
 #   docker-compose.windows.yml (+10 −2)  Compose Windows pointé sur l'image
-#                                    FORK (ghcr.io/gabiar-maker/hermes), pas
-#                                    l'amont (PR #23) — manquait au registre,
-#                                    constaté au re-calcul du 2026-08-07.
+#                                    FORK (ghcr.io/gabiar-maker/hermes).
 #
-# TOTAL sous label (8 fichiers upstream) : +382 −7.
+# TOTAL sous label (8 fichiers upstream) : +550 −7.
 # Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
-#   gateway/platforms/api_server.py (+265, dont property supports_push_send=False
-#   et l'override _send_with_retry — envoi unique, DEBUG : coupe la paire
-#   WARNING+ERROR par tour de mission dans errors.log, constatée LIVE 2026-08-09)
-#   · Dockerfile (+29 −1) · pyproject.toml (+10 −3).
-# Dette cœur consolidée (11 fichiers upstream touchés) : +686 −11 vs v2026.7.7.2.
+#   gateway/platforms/api_server.py (+487 −2 : 6 handlers managés + list_goal_meta
+#   + authorization_is_upstream + supports_push_send + _send_with_retry ;
+#   0.20.6 : nos 6 routes sont des TUPLES de `_http_route_table()` (miroir
+#   /p/{profile} gratuit), `_create_agent`/`_run_agent` portent nos 2 kwargs
+#   `enabled_toolsets_override`/`stateless` en plus des kwargs amont
+#   session_model/confirmed_runtime_lock/requested_runtime/route_source)
+#   · Dockerfile (+31 −1 : bandeau + `CMD ["gateway","run"]` sous l'ENTRYPOINT
+#   amont entrypoint-dispatch.sh) · pyproject.toml (+10 −3 : pytest-timeout +
+#   addopts --timeout).
+# Dette cœur consolidée (11 fichiers upstream touchés) : +1078 −13 vs v2026.8.27
+# (était +686 −11 vs v2026.7.7.2 : 1 patch cœur en MOINS (release.py),
+# api_server +84 (table de routes, kwargs amont), scheduler +20 (signature
+# complète + commentaires), le reste à l'identique).
 #
 # ----------------------------------------------------------------------------
-# VÉRIFICATION MENSUELLE (2026-07-13) — AUCUN REBASE : pas de nouvelle release.
+# VÉRIFICATION 2026-08-29 — FUSION v2026.8.27 (Hermes 0.20.6, 11 165 commits amont)
 #
-#   Base actuelle du fork      : v2026.7.7.2 (Hermes 0.18.2, publiée 2026-07-08).
-#   Dernière release amont     : v2026.7.7.2 — LA MÊME. Le canal stable n'a pas
-#                                bougé ; `upstream/main` porte 420 commits non
-#                                publiés (634 fichiers, +38060 −4725) : hors
-#                                politique (on ne rebase que sur des TAGS).
-#   Dette cœur                 : INCHANGÉE depuis F2 (chiffres ci-dessus rendus
-#                                exacts ; les « ~ » précédents étaient estimés).
-#                                Zéro patch cœur ajouté par les PR #18/#19/#20 :
-#                                le garde-fou a tenu.
-#   Patch supprimable ?        : NON. `hermes_cli/plugins.py` est IDENTIQUE en
-#                                amont (VALID_HOOKS inchangé) : toujours aucun
-#                                hook natif maintenance/périodique ni cycle-de-vie
-#                                cron ; `department` toujours absent du
-#                                delegate_tool amont. Les 3 gros patchs restent
-#                                justifiés.
+#   Base précédente            : v2026.7.7.2 (0.18.2). Base actuelle : v2026.8.27.
+#   Fusion                     : `git merge --no-ff v2026.8.27` — 8 fichiers en
+#                                conflit, 20 hunks ; tout le reste (dont
+#                                plugins/jb_outbound/**) fusionné seul.
+#   Résolutions (H1…H20, S1)   :
+#     H1/H2  Dockerfile        UNION bandeau + étage sqlite_build ; ENTRYPOINT
+#                              amont + NOTRE CMD conservé (sans lui = REPL :
+#                              compose.ts ne pose aucun `command:`).
+#     H3     cron/scheduler.py EUX (+480 : préflight, _BoundedCronSessionDB) ;
+#                              leur run_job → _run_job_impl ; notre wrapper à la
+#                              signature amont complète ; faux impl des tests
+#                              plugin passés en **kwargs.
+#     H4/H5/H7 api_server.py   UNIONS (propriétés jb + interactive_resume ;
+#                              kwargs jb + session_model/confirmed_runtime_lock/
+#                              requested_runtime/route_source).
+#     H6     api_server.py     EUX (dict agent_kwargs) + `session_db: None if
+#                              stateless…` + `skip_memory: stateless` re-posés.
+#     H8     api_server.py     EUX (profile_scope, browser_control) + nos 2
+#                              kwargs re-transmis à _create_agent.
+#     H9     api_server.py     EUX (boucle _http_route_table) ; nos 6 routes en
+#                              tuples de la table.
+#     H10/H12 run.py           UNIONS (constantes ; watchdog + heartbeat amont).
+#     H11    run.py            notre _goal_anchor_for_source + version `async`
+#                              amont de _get_goal_manager_for_event (test
+#                              test_managed_goal_arm passé en await).
+#     H13    pyproject.toml    EUX + pytest-timeout==2.4.0 ré-ajouté ;
+#                              `uv lock --check` vert.
+#     H14    scripts/release.py EUX intégralement — patch cœur SUPPRIMÉ (nos 2
+#                              e-mails sont dans contributors/emails/ amont).
+#     H15    test_goal_status_notice.py  nos 2 tests gardés, test de base
+#                              élagué par l'amont jeté.
+#     H16-H20 delegate_tool.py UNIONS (docstring, schémas department +
+#                              output_schema) ; H17 effective_department
+#                              réinséré ; H18 kwargs jb dans
+#                              _finalize_child_results.
+#   Pièges pincés par des tests (tests/test_jb_merge_0206.py, 9 tests) :
+#     run_job transmet extra_prompt/cancel_event (2 sites d'appel + signature) ·
+#     stateless ⇒ session_db None + skip_memory True (+ contrôle positif) ·
+#     _run_agent re-transmet override/stateless · Dockerfile CMD sous
+#     l'ENTRYPOINT + dispatcher transmet "$@" · pytest-timeout importable ET
+#     déclaré · subagent_stop porte child_department/child_subagent_id.
+#   Piège de TESTS (pas de code) : le conftest racine amont re-pointe
+#     `hermes_state.DEFAULT_DB_PATH` vers SON tmp dès que hermes_state est
+#     importé ; nos fixtures `hermes_home` (5 fichiers tests/gateway) le
+#     re-pointent désormais vers NOTRE home, sinon SessionDB() et
+#     SessionDB(db_path=…) ouvrent deux fichiers (lecture vide, ordre-dépendant).
+#   Préflight cron amont (`cron.preflight`), migration native du goal à la
+#   compression, child_subagent_id natif dans subagent_start : gains gratuits.
 #
-#   COLLISIONS PRÉVUES au prochain rebase (sonde de merge sur upstream/main,
-#   jetée après mesure — 2 fichiers, 1 hunk chacun, tout le reste auto-mergé) :
-#     - gateway/run.py : l'amont passe `_get_goal_manager_for_event` en
-#       `async def`. Notre `_goal_anchor_for_source` est inséré juste au-dessus
-#       → conflit purement positionnel. Résolution : garder notre méthode ET
-#       prendre la signature `async` amont (nos 2 points de câblage appellent
-#       `_goal_anchor_for_source`, pas le getter : rien d'autre à awaiter).
-#     - scripts/release.py : AUTHOR_MAP, ajouts des deux côtés au même endroit.
-#       Résolution : UNION (l'amont mappe les mêmes personnes sous D'AUTRES
-#       e-mails — nos 2 entrées restent nécessaires).
-#   Reste à surveiller (gros remaniements amont, auto-mergés mais à relire) :
-#     cron/scheduler.py (+174 amont : drain à l'arrêt, claim heartbeats),
-#     gateway/platforms/api_server.py (+170 −…), tools/delegate_tool.py (+57).
+#   POLITIQUE DE REFUSION (founder, QCM 2026-08-28) : refusion à chaque TAG
+#   amont vieux d'au moins 3 semaines, ou IMMÉDIATE sur release de sécurité ;
+#   jamais sur upstream/main. Garde hebdomadaire (CI) à écrire : compare le
+#   dernier tag amont à la base du fork et alerte au-delà du délai.
 #
-# RÉSORBÉ PAR F2 (2026-07-09) — ne PAS ré-introduire :
-#   toolsets.py          (request_tool_connection → register_tool du plugin)
-#   hermes_state.py      (list_meta_prefix → list_goal_meta, api_server.py)
+# RÉSORBÉ — ne PAS ré-introduire :
+#   scripts/release.py   (AUTHOR_MAP → contributors/emails/ amont, fusion 0.20.6)
+#   toolsets.py          (request_tool_connection → register_tool du plugin, F2)
+#   hermes_state.py      (list_meta_prefix → list_goal_meta, api_server.py, F2 ;
+#                         l'amont 0.20.6 expose SessionDB.list_meta_prefix :
+#                         candidat de résorption de list_goal_meta, −28 lignes)
 #   hermes_cli/config.py (goal_judge → register_auxiliary_task du plugin ;
-#                         watchdog_stale_seconds → fallback local du sweep)
-#   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ)
+#                         watchdog_stale_seconds → fallback local du sweep, F2 ;
+#                         goal_judge est natif en 0.20.6 : candidat −1 register)
+#   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ, F2)
 #
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
 # matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes
@@ -131,7 +179,7 @@ plugins/jb_outbound/**
 tests/**
 
 # Surface du CONTRAT MANAGÉ (fichier MIXTE upstream+jb depuis 0.18 : upstream a
-# introduit sa propre plateforme api_server ; notre diff = +403 : handlers
+# introduit sa propre plateforme api_server ; notre diff = +487 : handlers
 # arm/reply/goals/watchdog-tick/clear, list_goal_meta, authorization_is_upstream,
 # supports_push_send + override _send_with_retry ; /v1/reply (fork#26) = tour
 # synchrone borné pour les tiers — zéro toolset, sans état, sans mémoire).

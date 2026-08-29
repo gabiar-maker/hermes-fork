@@ -47,6 +47,13 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # 0.20.6 : le conftest racine amont re-pointe ``hermes_state.DEFAULT_DB_PATH`` vers SON
+    # tmp (``hermes_test/``) dès que hermes_state est importé ; ``SessionDB()`` sans chemin
+    # suit ce re-pointage alors que l'adaptateur passe ``get_hermes_home()/state.db`` →
+    # deux fichiers, lecture vide. Aligner les deux sur NOTRE home (même geste que l'amont).
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
     yield home
 
 

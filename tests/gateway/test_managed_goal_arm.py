@@ -43,6 +43,13 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # 0.20.6 : le conftest racine amont re-pointe ``hermes_state.DEFAULT_DB_PATH`` vers SON
+    # tmp (``hermes_test/``) dès que hermes_state est importé ; ``SessionDB()`` sans chemin
+    # suit ce re-pointage alors que l'adaptateur passe ``get_hermes_home()/state.db`` →
+    # deux fichiers, lecture vide. Aligner les deux sur NOTRE home (même geste que l'amont).
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
 
     from hermes_cli import goals
 
@@ -236,7 +243,8 @@ class TestGoalAnchor:
         # The stable anchor still resolves the active goal.
         assert GoalManager(session_id="mission:abc").is_active() is True
 
-    def test_arm_seam_keys_goal_by_anchor_not_gateway_session_id(self, hermes_home):
+    @pytest.mark.asyncio
+    async def test_arm_seam_keys_goal_by_anchor_not_gateway_session_id(self, hermes_home):
         """Seam contract (pre-rebase): the /goal turn injected by POST /v1/message
         arms through ``_get_goal_manager_for_event`` — for an API_SERVER event the
         manager MUST be keyed by the conversationId ANCHOR, never by the gateway
@@ -256,7 +264,8 @@ class TestGoalAnchor:
         )
         event = MessageEvent(text="/goal relancer les impayés", message_type=MessageType.TEXT, source=source)
 
-        mgr, session_entry = runner._get_goal_manager_for_event(event)
+        # 0.20.6 : le getter est devenu ``async def`` (warm-up SessionDB hors boucle).
+        mgr, session_entry = await runner._get_goal_manager_for_event(event)
         assert mgr is not None and session_entry is not None
         # Keyed by the stable anchor…
         assert mgr.session_id == "mission:rot"
