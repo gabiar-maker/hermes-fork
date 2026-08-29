@@ -147,7 +147,7 @@ def issue_body(decision: Decision, release_url: str) -> str:
 
 
 def _gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 def find_open_issue(repo: str) -> Optional[dict]:
