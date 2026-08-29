@@ -93,6 +93,16 @@ identique avec ou sans plugin.
 
 - **Fail-closed** : un outil d'envoi composio non répertorié est **bloqué** (jamais auto-envoyé). On
   élargit les listes dans `classify.py` au besoin.
+- **Fail-closed aussi sur nos propres pannes** : le runner de middleware du cœur est fail-open (une
+  callback qui lève avant `next_call` → l'outil est exécuté). Toute la décision du middleware est
+  donc encadrée d'un `try/except` global : si la classification, le mapping, le store ou la
+  construction du brouillon échouent, le modèle reçoit un résultat `blocked` (« rien n'est parti »)
+  et l'outil **ne s'exécute pas** — journalisé en ERROR avec le nom de l'outil et le type d'erreur,
+  jamais les arguments. Le pass-through des outils non concernés (lecture, interne) est inchangé.
+- **Déchargement propre** : le listener enregistre son arrêt (`shutdown()` + `server_close()`) via
+  `ctx.on_unload` quand le cœur l'offre (Hermes ≥ 0.20 : cache des plugins par profil,
+  rechargement forcé) — garde `getattr` : le plugin charge aussi sur 0.18.2, où `on_unload`
+  n'existe pas.
 - **Asynchrone** : l'envoi est rejoué hors du run d'agent (le store survit au redémarrage,
   idempotent sur `jb_id`). Pas de blocage du run en attendant la validation humaine.
 - **Minimisation** : les arguments complets (corps, destinataire détaillé) restent **locaux**
