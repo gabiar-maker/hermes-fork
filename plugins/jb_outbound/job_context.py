@@ -1,20 +1,40 @@
-"""Contexte d'attribution du job cron courant (casquette / skill / job).
+"""Contexte d'attribution du job cron courant (casquette / skill / job) — hooks natifs 0.20.6.
 
-Posé par le scheduler cron (``cron/scheduler.py::run_job``, via le pont ``_jb_job_hooks``) au
-lancement de chaque job, lu par le middleware (``middleware.py``) pour estampiller les
-DraftRequest avec le « département » de la tâche : ``department`` / ``skill_id`` / ``job_id``.
+Alimenté par les hooks plugin ``on_session_start`` / ``on_session_end`` du cœur (filtrés sur
+``platform == "cron"``), lu par le middleware (``middleware.py``) pour estampiller les DraftRequest
+avec le « département » de la tâche : ``department`` / ``skill_id`` / ``job_id``. Plus AUCUN patch
+de ``cron/scheduler.py`` (F2, 2026-08-29) : le fichier est redevenu byte-identique à l'amont.
 
-Pourquoi une ``ContextVar`` et pas une variable d'environnement : les jobs cron tournent dans des
-THREADS du processus gateway (pool parallèle de ``tick()``) — ``os.environ`` est global au
-processus, des jobs concurrents s'écraseraient mutuellement. Hermes a déjà migré l'état de
-session vers des ContextVars pour cette raison (``gateway/session_context.py``) et propage le
-contexte à chaque saut de thread (``copy_context`` dans ``_run_job_impl``,
-``propagate_context_to_thread`` pour les outils) : une ContextVar posée dans ``run_job`` est donc
-visible du middleware pendant TOUTE l'exécution du job, sans fuite entre jobs.
+Comment on retrouve le job : le scheduler amont nomme la session ``cron_{job_id}_{YYYYmmdd_HHMMSS}``
+(``cron/scheduler.py``, ``_cron_session_id``). ``on_session_start`` reçoit cet id et ``platform``,
+en extrait ``job_id`` (regex sur le SUFFIXE horodaté — l'id de job amont est ``uuid4().hex[:12]``,
+sans underscore, mais la regex tolère n'importe quel id) et lit le job dans le store cron par
+``cron.jobs.get_job`` (lecture seule) pour résoudre skills → casquette.
 
-La casquette vient du front-matter du skill attaché au job : champ ``casquette:`` (skills gold
-Jean-Billie) ou ``department:`` (skills custom). Résolution best-effort : toute erreur → champs
-absents, jamais d'exception — l'attribution ne doit JAMAIS faire échouer un job.
+Pourquoi un REGISTRE par session et pas une ``ContextVar`` : ``on_session_start``/``on_session_end``
+sont des hooks BORNÉS du cœur (``_HOOK_TIMEOUT_BOUNDED_HOOKS``) — le PluginManager les exécute dans un
+thread de travail sur une COPIE du contexte (``contextvars.copy_context().run``) : une ContextVar
+posée dans la callback ne serait jamais visible du thread de l'agent. Le middleware, lui, reçoit
+``session_id`` et ``turn_id`` du cœur à CHAQUE appel d'outil (``agent/tool_executor.py`` →
+``run_tool_execution_middleware``) : il retrouve le contexte par ``session_id``.
+
+Rotation de session à la compression : si le contexte est compressé PENDANT le job, l'amont fait
+tourner ``agent.session_id`` vers un enfant ``{YYYYmmdd_HHMMSS}_{hex6}`` (plus de préfixe ``cron_``).
+Le middleware pose donc, au premier appel d'outil (toujours avant une rotation : celle-ci n'arrive
+qu'après accumulation de résultats d'outils), un ALIAS ``turn_id → session_id`` — le ``turn_id`` est
+stable sur tout le ``run_conversation`` et transmis au middleware comme à ``on_session_end``. Après
+rotation, drafts et signal « finished » sont retrouvés par ``turn_id``. Limite résiduelle : un job
+compressé AVANT tout appel d'outil (cas théorique : prompt initial déjà au-delà du seuil) perdrait
+son attribution après rotation et son signal de fin.
+
+Ce qui n'est PLUS signalé (par rapport à l'ancien wrapper ``run_job``) : un job qui échoue AVANT de
+créer l'agent (script sans sortie, blocage par le scanner d'injection cron, préflight, garde
+d'exfiltration) n'ouvre aucune session → ni « started » ni « finished » ; et l'issue de la
+LIVRAISON post-tour n'est pas reflétée (le statut vient de l'issue du tour : ``completed`` /
+``failed`` / ``interrupted``).
+
+Résolution best-effort : toute erreur → champs absents, jamais d'exception — l'attribution ne doit
+JAMAIS faire échouer un job (les hooks sont de toute façon isolés par le cœur).
 """
 
 from __future__ import annotations
@@ -22,64 +42,196 @@ from __future__ import annotations
 import logging
 import os
 import re
-from contextvars import ContextVar
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Contexte du job cron courant ({job_id, skill_id, department, label}) ou None hors job.
-_JOB_CTX: ContextVar[Optional[Dict[str, Any]]] = ContextVar("jb_job_ctx", default=None)
+# Format amont de l'id de session cron (cron/scheduler.py : f"cron_{job_id}_{%Y%m%d_%H%M%S}").
+_SESSION_RE = re.compile(r"^cron_(?P<job_id>.+)_\d{8}_\d{6}$")
+
+# Filet anti-fuite : une entrée sans « finished » (callback suspendue par le cœur après un timeout,
+# rechargement des plugins…) est évincée après ce délai. Un job cron dure au plus quelques heures.
+_TTL_SECONDS = 6 * 3600
+
+_lock = threading.Lock()
+# session_id → (ctx, posé_à)
+_by_session: Dict[str, Tuple[Dict[str, Any], float]] = {}
+# turn_id → session_id (alias posé par le middleware, cf. docstring du module)
+_by_turn: Dict[str, str] = {}
 
 
-def current() -> Optional[Dict[str, Any]]:
-    """Contexte d'attribution du job courant, ou ``None`` hors job cron (chat libre)."""
-    return _JOB_CTX.get()
+# ---------------------------------------------------------------------------
+# API lue par le middleware
+# ---------------------------------------------------------------------------
+
+def current(session_id: Optional[str] = None, turn_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Contexte d'attribution du job cron courant, ou ``None`` hors job cron (chat libre).
+
+    Recherche par ``session_id`` (transmis par le cœur au middleware), puis par ``turn_id`` (alias,
+    survit à la rotation de session), puis par la ContextVar ``HERMES_SESSION_ID`` du cœur (appelant
+    qui n'aurait rien transmis). Renvoie une COPIE : le registre n'est jamais muté par un lecteur.
+    """
+    with _lock:
+        entry = _lookup_locked(session_id, turn_id)
+    if entry is None and not session_id and not turn_id:
+        ambient = _ambient_session_id()
+        if ambient:
+            with _lock:
+                entry = _lookup_locked(ambient, None)
+    return dict(entry[0]) if entry else None
 
 
-def job_started(job: Optional[Dict[str, Any]]) -> Optional[object]:
-    """Pose le contexte d'attribution et signale le début du job. N'échoue jamais.
+def bind_turn(session_id: Optional[str], turn_id: Optional[str]) -> None:
+    """Alias ``turn_id → session_id`` (appelé par le middleware à chaque appel d'outil). N'échoue jamais."""
+    if not session_id or not turn_id:
+        return
+    try:
+        with _lock:
+            if session_id in _by_session and turn_id not in _by_turn:
+                _by_turn[turn_id] = session_id
+    except Exception:
+        logger.debug("jb_outbound: bind_turn en échec (ignoré)", exc_info=True)
 
-    Appelé par le scheduler au lancement d'un job cron. Renvoie le token de reset à repasser
-    à ``job_finished`` (ou ``None`` si le plugin est passif : ni boucle de proposition
-    ``JB_DECISION_PUSH_URL``, ni fil d'activité ``JB_ACTIVITY_EVENTS``).
+
+# ---------------------------------------------------------------------------
+# Hooks natifs (enregistrés dans __init__.py : on_session_start / on_session_end)
+# ---------------------------------------------------------------------------
+
+def on_session_start(*, session_id: str = "", platform: str = "", **_: Any) -> None:
+    """Début d'une session cron : pose le contexte d'attribution et signale le début du job.
+
+    Ignore toute session non-cron (chat, sous-agents ``platform="subagent"``…) et tout id qui ne
+    porte pas le format amont. Passif si le plugin n'a ni boucle de proposition
+    (``JB_DECISION_PUSH_URL``) ni fil d'activité (``JB_ACTIVITY_EVENTS``).
     """
     try:
+        if platform != "cron":
+            return
+        job_id = job_id_from_session_id(session_id)
+        if job_id is None:
+            return
         from . import activity, config
 
         if not (config.enabled() or activity.enabled()):
-            return None
-        ctx = _build_ctx(job)
-        token = _JOB_CTX.set(ctx)
+            return
+        ctx = _build_ctx(_load_job(job_id) or {"id": job_id})
+        now = time.monotonic()
+        with _lock:
+            _evict_expired_locked(now)
+            _by_session[session_id] = (ctx, now)
         activity.emit("started", "ok", ctx)
-        return token
     except Exception:
-        logger.debug("jb_outbound: job_started en échec (ignoré)", exc_info=True)
+        logger.debug("jb_outbound: on_session_start en échec (ignoré)", exc_info=True)
+
+
+def on_session_end(
+    *,
+    session_id: str = "",
+    platform: str = "",
+    turn_id: str = "",
+    completed: Optional[bool] = None,
+    failed: Optional[bool] = None,
+    interrupted: Optional[bool] = None,
+    **_: Any,
+) -> None:
+    """Fin du tour cron : signale la fin du job et retire le contexte du registre.
+
+    Retrouvé par ``session_id`` ou, après rotation à la compression, par ``turn_id``. Le statut est
+    « ok » si le tour s'est achevé (``completed``) sans ``failed`` ni ``interrupted``.
+    """
+    try:
+        if platform != "cron":
+            return
+        with _lock:
+            entry = _lookup_locked(session_id, turn_id)
+            if entry is None:
+                return
+            ctx = entry[0]
+            _forget_locked(_session_id_of_locked(ctx, session_id, turn_id))
+        from . import activity
+
+        ok = not failed and not interrupted and (completed if completed is not None else True)
+        activity.emit("finished", "ok" if ok else "error", ctx)
+    except Exception:
+        logger.debug("jb_outbound: on_session_end en échec (ignoré)", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Registre (helpers sous verrou)
+# ---------------------------------------------------------------------------
+
+def _lookup_locked(session_id: Optional[str], turn_id: Optional[str]) -> Optional[Tuple[Dict[str, Any], float]]:
+    if session_id and session_id in _by_session:
+        return _by_session[session_id]
+    if turn_id:
+        sid = _by_turn.get(turn_id)
+        if sid and sid in _by_session:
+            return _by_session[sid]
+    return None
+
+
+def _session_id_of_locked(ctx: Dict[str, Any], session_id: Optional[str], turn_id: Optional[str]) -> Optional[str]:
+    if session_id and session_id in _by_session and _by_session[session_id][0] is ctx:
+        return session_id
+    if turn_id:
+        return _by_turn.get(turn_id)
+    return None
+
+
+def _forget_locked(ctx_session_id: Optional[str]) -> None:
+    if not ctx_session_id:
+        return
+    _by_session.pop(ctx_session_id, None)
+    for tid in [t for t, s in _by_turn.items() if s == ctx_session_id]:
+        _by_turn.pop(tid, None)
+
+
+def _evict_expired_locked(now: float) -> None:
+    stale = [sid for sid, (_, at) in _by_session.items() if now - at > _TTL_SECONDS]
+    for sid in stale:
+        _forget_locked(sid)
+
+
+def _reset_for_tests() -> None:
+    with _lock:
+        _by_session.clear()
+        _by_turn.clear()
+
+
+def _ambient_session_id() -> Optional[str]:
+    """``HERMES_SESSION_ID`` du contexte courant (ContextVar du cœur), best-effort."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_ID", "") or None
+    except Exception:
         return None
 
 
-def job_finished(job: Optional[Dict[str, Any]], success: bool = True, token: Optional[object] = None) -> None:
-    """Signale la fin du job et nettoie le contexte. N'échoue jamais.
+# ---------------------------------------------------------------------------
+# Résolution du job (session_id → job_id → enregistrement du store cron)
+# ---------------------------------------------------------------------------
 
-    Le nettoyage est indispensable : les threads du pool cron sont RÉUTILISÉS — sans reset, un
-    job suivant sans skill hériterait de l'attribution du précédent.
-    """
+def job_id_from_session_id(session_id: Optional[str]) -> Optional[str]:
+    """``cron_{job_id}_{YYYYmmdd_HHMMSS}`` → ``job_id`` ; ``None`` pour tout autre format."""
+    if not session_id:
+        return None
+    m = _SESSION_RE.match(str(session_id))
+    return m.group("job_id") if m else None
+
+
+def _load_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Enregistrement du job dans le store cron (``cron.jobs.get_job``, LECTURE SEULE). Best-effort."""
     try:
-        from . import activity
+        from cron.jobs import get_job
 
-        if activity.enabled():
-            ctx = _JOB_CTX.get() or _build_ctx(job)
-            activity.emit("finished", "ok" if success else "error", ctx)
+        return get_job(job_id)
     except Exception:
-        logger.debug("jb_outbound: job_finished en échec (ignoré)", exc_info=True)
-    finally:
-        try:
-            if token is not None:
-                _JOB_CTX.reset(token)
-            else:
-                _JOB_CTX.set(None)
-        except Exception:
-            _JOB_CTX.set(None)
+        logger.debug("jb_outbound: job cron %s introuvable dans le store (ignoré)", job_id, exc_info=True)
+        return None
 
 
 # ---------------------------------------------------------------------------

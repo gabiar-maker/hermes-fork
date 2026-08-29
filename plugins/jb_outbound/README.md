@@ -1,8 +1,9 @@
 # jb_outbound — « rien ne part sans accord » (Jean-Billie)
 
-Greffe Jean-Billie sur **Hermes Agent** (Nous Research, MIT). Un seul plugin + **un point de
-greffe optionnel dans le scheduler cron** (`cron/scheduler.py::run_job`, no-op sans le plugin)
-→ suivi de l'upstream trivial.
+Greffe Jean-Billie sur **Hermes Agent** (Nous Research, MIT). Un seul plugin, **zéro patch du
+scheduler cron** depuis F2 (2026-08-29 : `cron/scheduler.py` est byte-identique à l'amont, le
+pont d'attribution passe par les hooks natifs `on_session_start` / `on_session_end`) → suivi de
+l'upstream trivial.
 
 ## Ce que ça fait
 
@@ -31,19 +32,40 @@ outil d'envoi appelé
 
 ## Attribution (départements) & fil d'activité
 
-Au lancement d'un job cron, le scheduler pose le **contexte d'attribution** du job
-(`job_context.py`, ContextVar — les jobs tournent dans des threads du gateway) : casquette lue
-dans le front-matter du skill du job (`casquette:` pour les skills gold, `department:` pour les
-customs), id du skill, id du job.
+À l'ouverture de la session d'un job cron, le cœur tire le hook natif `on_session_start`
+(`platform == "cron"`, `session_id = cron_{job_id}_{YYYYmmdd_HHMMSS}`) : le plugin en extrait
+`job_id`, lit le job dans le store cron (`cron.jobs.get_job`, lecture seule) et pose le **contexte
+d'attribution** (`job_context.py`) : casquette lue dans le front-matter du skill du job
+(`casquette:` pour les skills gold, `department:` pour les customs), id du skill, id du job.
+`on_session_end` signale la fin et nettoie.
 
+- **Registre par session, pas de ContextVar** : ces deux hooks sont BORNÉS par le cœur (exécutés
+  dans un thread de travail sur une copie du contexte), une ContextVar posée là serait invisible
+  du thread de l'agent. Le middleware reçoit `session_id` / `turn_id` du cœur à chaque appel
+  d'outil et retrouve le contexte par `session_id` ; il pose un alias `turn_id → session_id` au
+  premier appel d'outil, qui survit à la rotation de session à la compression.
 - **Stamp des drafts** : tout DraftRequest émis pendant un job porte les champs additifs de
   premier niveau `department`, `skill_id`, `job_id` (omis hors contexte job — chat libre). Le
   daemon ignore les champs inconnus tant que le contrat Go n'est pas étendu (vague 2).
 - **Fil d'activité** (`activity.py`) : au début et à la fin de chaque job cron, POST
   fire-and-forget `http://{JB_DRAFT_ADDR}/v1/activity` avec
   `{phase: "started"|"finished", status: "ok"|"error", department?, skill_id?, job_id?, label?}`
-  (`label` = nom lisible du job). **Gated par `JB_ACTIVITY_EVENTS=1`** (défaut OFF — la route
-  daemon n'existe pas encore). Timeout 2 s, échecs avalés : ne bloque jamais un job.
+  (`label` = nom lisible du job ; `status` = issue du tour : `completed` sans `failed` ni
+  `interrupted`). **Gated par `JB_ACTIVITY_EVENTS=1`** (défaut OFF — la route daemon n'existe
+  pas encore). Timeout 2 s, échecs avalés : ne bloque jamais un job.
+- **Limites (vs l'ancien wrapper `run_job`)** : un job qui échoue AVANT de créer l'agent (script
+  sans sortie, blocage par le scanner d'injection cron, préflight) n'ouvre aucune session → aucun
+  signal ; l'issue de la livraison post-tour n'est pas reflétée ; une compression AVANT tout appel
+  d'outil (théorique) perdrait l'attribution après rotation.
+
+## Commande « jb-mcp-probe » (sonde MCP du fleet daemon)
+
+`hermes jb-mcp-probe --url <url> [--header "Name: Value"]...` : découverte `tools/list` d'un
+serveur MCP ad hoc, **read-only** (jamais `tools/call`, rien n'est écrit dans `config.yaml`),
+stdout = un seul objet JSON `{"tools": [{"name", "description"}]}`, diagnostics sur stderr sans
+jamais renvoyer l'URL ni les en-têtes, codes de sortie 2 (usage) / 1 (sonde en échec). Enregistrée
+par `ctx.register_cli_command` (`mcp_probe.py`) ; sortie **identique** à `hermes mcp probe` (hunk
+cœur en transition : il est retiré quand le daemon Go bascule de chaîne — lane D).
 
 ## Outil « creer_support » (Ma marque, Option A)
 

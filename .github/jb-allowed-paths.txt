@@ -32,14 +32,15 @@
 # git diff --name-status).
 #
 # ----------------------------------------------------------------------------
-# DETTE CŒUR DÉCLARÉE (fusion v2026.8.27, 2026-08-29) — diff exact vs v2026.8.27
-# (Hermes 0.20.6, publiée 2026-08-27). Chiffres = `git diff --stat v2026.8.27 --
-# <fichier>` APRÈS résolution des 20 hunks (rapport S1, base de contexte
-# « Upstream Hermes 0.20 » du monorepo, tasks/lanes/, 2026-08-28).
+# DETTE CŒUR DÉCLARÉE (fusion v2026.8.27, 2026-08-29 ; résorption F2 le même
+# jour) — diff exact vs v2026.8.27 (Hermes 0.20.6, publiée 2026-08-27).
+# Chiffres = `git diff --numstat v2026.8.27 -- <fichier>` APRÈS la lane F2
+# (rapports S1/S5, base de contexte « Upstream Hermes 0.20 » du monorepo,
+# tasks/lanes/, 2026-08-28 ; lots F2-1 … F2-6 du 2026-08-29).
 # Ces fichiers restent HORS allowlist : les toucher exige « jb-core-approved ».
 # Ne pas ÉTENDRE ces hunks sans nécessité ; re-vérifier à CHAQUE refusion amont.
 #
-#   gateway/run.py (+211 −2)
+#   gateway/run.py (+201 −2)
 #       Watchdog des missions managées : constante stale + resolver config
 #       (goals.watchdog_stale_seconds, clé HORS DEFAULT_CONFIG, fallback local)
 #       + _watchdog_sweep (re-drive à froid via handle_message, POST
@@ -51,31 +52,34 @@
 #       handle STABLE du daemon (goalId = conversationId).
 #       Raison : aucun hook de maintenance/périodique natif côté plugins ;
 #       l'amont JETTE les continuations périmées, il ne re-drive pas à froid.
-#       + garde `supports_push_send` dans _send_goal_status_notice : un
-#       adaptateur requête/réponse (api_server) n'a pas de canal push, l'avis
-#       de statut est sauté au lieu de logger un warning à CHAQUE tour.
-#       Candidat PR amont (jumeau natif : `supports_async_delivery`).
-#   cron/scheduler.py (+72 −1)
-#       Wrapper run_job → hooks d'attribution jb (job_context), best-effort,
-#       stock sans plugin ; le run_job amont est renommé _run_job_impl et le
-#       wrapper porte la SIGNATURE AMONT COMPLÈTE (defer_agent_teardown,
-#       extra_prompt, cancel_event — 0.20.6) : en oublier un = TypeError au
-#       premier cron (test-piège tests/test_jb_merge_0206.py).
-#       Raison : toujours aucun hook cycle-de-vie cron dans VALID_HOOKS ;
-#       résorbable via on_session_start/on_session_end(platform == "cron") —
-#       convention, pas contrat (S1 §2.E) — différé après fusion.
+#       Seam candidat (S5 §B.1) : `ctx.inject_message` + PR amont
+#       `on_gateway_tick` (~20 lignes) → dette run.py = 0. La garde
+#       `supports_push_send` de _send_goal_status_notice est RÉSORBÉE (F2-2 :
+#       silence obtenu dans `send()` de APIServerAdapter, fichier allowlisté).
 #   tools/delegate_tool.py (+35 −2)
 #       Plumbing du param « department » (schéma single + tasks[] à côté du
 #       nouvel `output_schema` amont, kwargs des hooks subagent_start/stop +
 #       tag de l'agent enfant) — consommé par le plugin (delegation_activity).
 #       0.20.6 : l'amont a extrait `_finalize_child_results` ; nos 2 kwargs
 #       (child_subagent_id, child_department) y sont réinsérés (test-piège).
+#       Aucun seam plugin (S5 §B.5) : PR amont additive `metadata` sur
+#       delegate_task + `child_metadata` dans les hooks — à proposer.
 #   hermes_cli/mcp_config.py (+44) et hermes_cli/subcommands/mcp.py (+16)
-#       Sous-commande read-only « hermes mcp probe » (sonde MCP du fleet
-#       daemon, stdout JSON, zéro écriture). `hermes mcp test` amont prend un
-#       NOM configuré, pas `--url` → toujours justifié ; NON exercé sous
-#       mcp 2.0 / httpx2 (réserve S1).
+#       EN TRANSITION (F2-3). Sous-commande read-only « hermes mcp probe »
+#       (sonde MCP du fleet daemon, stdout JSON, zéro écriture). Son JUMEAU
+#       plugin `hermes jb-mcp-probe` (plugins/jb_outbound/mcp_probe.py,
+#       ctx.register_cli_command, sortie byte-identique — test de parité
+#       plugins/jb_outbound/test_mcp_probe.py) est en place ; le hunk cœur
+#       est retiré DÈS que le daemon Go appelle la nouvelle chaîne (lane D,
+#       monorepo). `hermes mcp test` amont prend un NOM configuré, pas
+#       `--url` → le besoin reste ; NON exercé sous mcp 2.0 / httpx2 (S1).
 #   .github/workflows/build-push.yml (+148, jb-owned)  CI image GHCR.
+#   .github/workflows/jb-upstream-watch.yml (43 l., jb-owned, NOUVEAU F2-5)
+#       Garde hebdo de veille amont (lundi 07:00 UTC + workflow_dispatch).
+#   scripts/jb_upstream_watch.py (241 l., jb-owned, NOUVEAU F2-5)
+#       Logique de la veille (stdlib + gh ; tests tests/test_jb_upstream_watch.py).
+#       `scripts/**` n'est PAS allowlisté (globs inchangés) : sous label à
+#       dessein, comme build-push.yml — un script rarement retouché.
 #   uv.lock (+14)                    Lockfile (suit pyproject : entrée
 #                                    pytest-timeout) — sous label à dessein
 #                                    (surface supply-chain). `uv lock --check`
@@ -83,26 +87,54 @@
 #   docker-compose.windows.yml (+10 −2)  Compose Windows pointé sur l'image
 #                                    FORK (ghcr.io/gabiar-maker/hermes).
 #
-# TOTAL sous label (8 fichiers upstream) : +550 −7.
+# TOTAL sous label (7 fichiers upstream) : +468 −6 (était +550 −7 avant F2 :
+# cron/scheduler.py −72/+1 résorbé, run.py −10) + 2 fichiers jb-owned NEUFS
+# (284 l.).
 # Fichiers upstream patchés mais DÉJÀ allowlistés (rappel, hors total ci-dessus) :
-#   gateway/platforms/api_server.py (+487 −2 : 6 handlers managés + list_goal_meta
-#   + authorization_is_upstream + supports_push_send + _send_with_retry ;
-#   0.20.6 : nos 6 routes sont des TUPLES de `_http_route_table()` (miroir
-#   /p/{profile} gratuit), `_create_agent`/`_run_agent` portent nos 2 kwargs
-#   `enabled_toolsets_override`/`stateless` en plus des kwargs amont
-#   session_model/confirmed_runtime_lock/requested_runtime/route_source)
-#   · Dockerfile (+31 −1 : bandeau + `CMD ["gateway","run"]` sous l'ENTRYPOINT
-#   amont entrypoint-dispatch.sh) · pyproject.toml (+10 −3 : pytest-timeout +
-#   addopts --timeout).
-# Dette cœur consolidée (11 fichiers upstream touchés) : +1078 −13 vs v2026.8.27
-# (était +686 −11 vs v2026.7.7.2 : 1 patch cœur en MOINS (release.py),
-# api_server +84 (table de routes, kwargs amont), scheduler +20 (signature
-# complète + commentaires), le reste à l'identique).
+#   gateway/platforms/api_server.py (+533 −2 : 6 handlers managés + list_goal_meta
+#   + authorization_is_upstream + supports_push_send (documentation) +
+#   `send()` = succès SILENCIEUX pour une conversation managée
+#   (`_is_managed_conversation` : cache posé par POST /v1/message, puis ligne
+#   `goal:<conversationId>` du store — reconnaît aussi les re-drives après
+#   redémarrage), échec contractuel pour tout autre appelant (un
+#   send_message vers cette plateforme n'est jamais « livré ») +
+#   _send_with_retry ; 0.20.6 : nos 6 routes sont des TUPLES de
+#   `_http_route_table()` (miroir /p/{profile} gratuit), `_create_agent`/
+#   `_run_agent` portent nos 2 kwargs `enabled_toolsets_override`/`stateless`
+#   en plus des kwargs amont session_model/confirmed_runtime_lock/
+#   requested_runtime/route_source)
+#   · Dockerfile (+42 −1 : bandeau + `CMD ["gateway","run"]` sous l'ENTRYPOINT
+#   amont entrypoint-dispatch.sh + F2-4 `RUN rm -rf …/skills/autonomous-ai-
+#   agents/hermes-agent` après `COPY . .` — white-label : `skills.disabled`
+#   et `.no-bundled-skills` sont des placebos (ESSENTIAL_SKILLS), seule
+#   l'absence de la SOURCE tient ; sync_skills tolère l'absence, prouvé par
+#   tests/test_jb_skill_hermes_agent_absent.py)
+#   · pyproject.toml (+10 −3 : pytest-timeout + addopts --timeout).
+# Dette cœur consolidée (10 fichiers upstream touchés) : +1053 −12 vs v2026.8.27
+# (était +1078 −13 sur 11 fichiers avant F2 ; +686 −11 vs v2026.7.7.2).
+#
+# VIGILANCE à chaque refusion (relecture F1, 2026-08-29) :
+#   `_create_agent()` amont traverse désormais `_checkpoint_agent_kwargs(
+#   user_config)` (gateway/run.py ~l.3723, importé par api_server.py) pour
+#   TOUT agent, y compris `/v1/reply` — inoffensif tant que
+#   `checkpoints.enabled` reste False par défaut (hermes_cli/config_defaults.py
+#   ~l.652) et que le config-generator du monorepo ne l'émet pas.
+#
+# FUITE RÉSIDUELLE documentée (identique 0.18.2, hors périmètre du fork) :
+#   agent/prompt_builder.HERMES_AGENT_HELP_GUIDANCE (« You run on Hermes
+#   Agent… load the `hermes-agent` skill ») est injectée dès que `skill_view`
+#   est dans le toolset (agent/system_prompt.py), sans vérifier que le skill
+#   existe. Pincée par tests/test_jb_skill_hermes_agent_absent.py (casse le
+#   jour où l'amont conditionne la phrase). PR amont minimale : n'émettre la
+#   guidance que si le skill est présent dans l'index (sinon la variante docs
+#   seule, ou rien) — ne PAS patcher le cœur ici.
 #
 # ----------------------------------------------------------------------------
 # VÉRIFICATION 2026-08-29 — FUSION v2026.8.27 (Hermes 0.20.6, 11 165 commits amont)
 #
 #   Base précédente            : v2026.7.7.2 (0.18.2). Base actuelle : v2026.8.27.
+#   Marqueur machine-lisible (lu par scripts/jb_upstream_watch.py, garde hebdo) :
+# JB_UPSTREAM_BASE=v2026.8.27
 #   Fusion                     : `git merge --no-ff v2026.8.27` — 8 fichiers en
 #                                conflit, 20 hunks ; tout le reste (dont
 #                                plugins/jb_outbound/**) fusionné seul.
@@ -111,9 +143,9 @@
 #                              amont + NOTRE CMD conservé (sans lui = REPL :
 #                              compose.ts ne pose aucun `command:`).
 #     H3     cron/scheduler.py EUX (+480 : préflight, _BoundedCronSessionDB) ;
-#                              leur run_job → _run_job_impl ; notre wrapper à la
-#                              signature amont complète ; faux impl des tests
-#                              plugin passés en **kwargs.
+#                              wrapper run_job à la signature amont complète
+#                              → RÉSORBÉ en F2-1 le même jour (fichier
+#                              byte-identique au tag, voir RÉSORBÉ).
 #     H4/H5/H7 api_server.py   UNIONS (propriétés jb + interactive_resume ;
 #                              kwargs jb + session_model/confirmed_runtime_lock/
 #                              requested_runtime/route_source).
@@ -132,17 +164,22 @@
 #     H14    scripts/release.py EUX intégralement — patch cœur SUPPRIMÉ (nos 2
 #                              e-mails sont dans contributors/emails/ amont).
 #     H15    test_goal_status_notice.py  nos 2 tests gardés, test de base
-#                              élagué par l'amont jeté.
+#                              élagué par l'amont jeté ; réécrits en F2-2 (le
+#                              silence est prouvé sur le VRAI APIServerAdapter,
+#                              avec contrôle positif : chat non managé → WARNING).
 #     H16-H20 delegate_tool.py UNIONS (docstring, schémas department +
 #                              output_schema) ; H17 effective_department
 #                              réinséré ; H18 kwargs jb dans
 #                              _finalize_child_results.
-#   Pièges pincés par des tests (tests/test_jb_merge_0206.py, 9 tests) :
-#     run_job transmet extra_prompt/cancel_event (2 sites d'appel + signature) ·
-#     stateless ⇒ session_db None + skip_memory True (+ contrôle positif) ·
-#     _run_agent re-transmet override/stateless · Dockerfile CMD sous
-#     l'ENTRYPOINT + dispatcher transmet "$@" · pytest-timeout importable ET
-#     déclaré · subagent_stop porte child_department/child_subagent_id.
+#   Pièges pincés par des tests (tests/test_jb_merge_0206.py, 10 fonctions /
+#   11 items collectés — une paramétrée ×2) :
+#     cron/scheduler.py sans marqueur jb + byte-identique au tag (skip si tag
+#     absent) + le plugin enregistre on_session_start/on_session_end (hooks
+#     VALID_HOOKS bornés) · stateless ⇒ session_db None + skip_memory True
+#     (+ contrôle positif) · _run_agent re-transmet override/stateless ·
+#     Dockerfile CMD sous l'ENTRYPOINT + dispatcher transmet "$@" ·
+#     pytest-timeout importable ET déclaré · subagent_stop porte
+#     child_department/child_subagent_id.
 #   Piège de TESTS (pas de code) : le conftest racine amont re-pointe
 #     `hermes_state.DEFAULT_DB_PATH` vers SON tmp dès que hermes_state est
 #     importé ; nos fixtures `hermes_home` (5 fichiers tests/gateway) le
@@ -153,10 +190,30 @@
 #
 #   POLITIQUE DE REFUSION (founder, QCM 2026-08-28) : refusion à chaque TAG
 #   amont vieux d'au moins 3 semaines, ou IMMÉDIATE sur release de sécurité ;
-#   jamais sur upstream/main. Garde hebdomadaire (CI) à écrire : compare le
-#   dernier tag amont à la base du fork et alerte au-delà du délai.
+#   jamais sur upstream/main. Garde hebdomadaire ÉCRITE (F2-5) :
+#   .github/workflows/jb-upstream-watch.yml + scripts/jb_upstream_watch.py —
+#   lit JB_UPSTREAM_BASE ci-dessus, interroge releases/latest amont, ouvre ou
+#   met à jour (jamais de doublon, label « veille-amont ») une issue « Veille
+#   amont : <tag> disponible (base <base>, N jours) » si tag ≠ base ET (≥ 21 j
+#   OU `security`/CVE dans la release) ; referme l'issue quand la base rattrape
+#   le tag ; exit 0 quoi qu'il arrive. À CHAQUE refusion : mettre à jour
+#   JB_UPSTREAM_BASE (le test test_lecture_du_marqueur… exige la cohérence avec
+#   « Base actuelle »).
 #
 # RÉSORBÉ — ne PAS ré-introduire :
+#   cron/scheduler.py    (wrapper run_job/_jb_job_hooks → hooks natifs
+#                         on_session_start/on_session_end du plugin, filtrés
+#                         platform == "cron", job_id extrait du session_id
+#                         amont `cron_{job_id}_{YYYYmmdd_HHMMSS}`, job lu par
+#                         cron.jobs.get_job ; registre PAR SESSION dans
+#                         job_context (hooks BORNÉS = thread + contexte copié,
+#                         une ContextVar y serait invisible) + alias turn_id
+#                         posé par le middleware pour survivre à la rotation
+#                         de session — F2-1, 2026-08-29. Perdu et documenté :
+#                         signaux des jobs qui échouent AVANT l'agent.)
+#   gateway/run.py garde supports_push_send (→ `send()` de APIServerAdapter,
+#                         succès silencieux pour une conversation managée —
+#                         F2-2, 2026-08-29)
 #   scripts/release.py   (AUTHOR_MAP → contributors/emails/ amont, fusion 0.20.6)
 #   toolsets.py          (request_tool_connection → register_tool du plugin, F2)
 #   hermes_state.py      (list_meta_prefix → list_goal_meta, api_server.py, F2 ;
@@ -166,6 +223,16 @@
 #                         watchdog_stale_seconds → fallback local du sweep, F2 ;
 #                         goal_judge est natif en 0.20.6 : candidat −1 register)
 #   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ, F2)
+#
+# PR AMONT PROPOSÉES (titre → effet) :
+#   1. « gateway: on_gateway_tick observer hook from _session_stall_watcher »
+#      → notre _watchdog_sweep devient un hook plugin, dette run.py = 0.
+#   2. « delegate_task: additive `metadata` + child_metadata in subagent hooks »
+#      → department sans patch de tools/delegate_tool.py.
+#   3. « prompt: emit HERMES_AGENT_HELP_GUIDANCE only when the hermes-agent
+#      skill is present » → ferme la fuite résiduelle du prompt système.
+#   4. « mcp: `hermes mcp test --url` ad hoc (read-only JSON) » → retire notre
+#      sonde une fois le daemon basculé (ou la commande plugin suffit).
 #
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
 # matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes

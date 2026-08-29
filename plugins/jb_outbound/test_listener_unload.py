@@ -64,6 +64,9 @@ class _BaseCtx:
     def register_web_search_provider(self, *a, **k):
         pass
 
+    def register_cli_command(self, *a, **k):
+        pass
+
 
 class _CtxWithUnload(_BaseCtx):
     """PluginContext 0.20.6 : offre `on_unload` et capture le callback."""

@@ -22181,16 +22181,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
-        if not getattr(adapter, "supports_push_send", True):
-            # Request/response adapters (api_server) have no push channel: goal
-            # state is read over HTTP (GET /v1/goals) instead. Attempting send()
-            # would only log a spurious "status send failed" warning on every
-            # continuation turn.
-            logger.debug(
-                "goal continuation: %s has no push channel, notice skipped",
-                getattr(source, "platform", None),
-            )
-            return
 
         try:
             metadata = self._thread_metadata_for_source(source)

@@ -1,0 +1,43 @@
+# Fork Jean-Billie — veille amont hebdomadaire (F2, lot 5).
+#
+# Politique de refusion (founder, QCM 2026-08-28) : refusion à chaque TAG amont
+# vieux d'au moins 3 semaines, ou IMMÉDIATE sur une release de sécurité ; jamais
+# sur upstream/main. Ce workflow compare le dernier tag de
+# NousResearch/hermes-agent à la base déclarée du fork (marqueur
+# `# JB_UPSTREAM_BASE=vX` dans .github/jb-allowed-paths.txt) et ouvre / met à
+# jour (jamais de doublon) une issue « Veille amont : <tag> disponible ».
+#
+# Jamais bruyant : le script sort TOUJOURS en 0 (erreur réseau / gh → log seul).
+# Aucun secret : le GITHUB_TOKEN par défaut suffit (issues: write sur le fork).
+# Fichier fork-owned, sous label « jb-core-approved » comme build-push.yml.
+name: JB — Veille amont Hermes
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # lundi 07:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: jb-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Dernier tag amont vs base du fork
+    # Ne tourne que sur le fork (pas sur l'amont si le fichier y remontait).
+    if: github.repository != 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Comparer et alerter (idempotent, exit 0)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/jb_upstream_watch.py

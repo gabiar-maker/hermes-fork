@@ -299,6 +299,17 @@ RUN cd web && npm run build && \
 # write so the build steps below don't need chmod u+w dances.
 COPY --link --chmod=a+rX,go-w . .
 
+# Fork Jean-Billie (white-label, F2 lot 4) : le skill « hermes-agent » (manuel
+# d'exploitation de Hermes : « You run on Hermes Agent… ») n'existe PAS dans
+# l'image. `skills.disabled` et `.no-bundled-skills` ne l'écartent pas
+# (agent/skill_utils.ESSENTIAL_SKILLS le ré-injecte partout, 0.20.6) ; la seule
+# voie sûre est l'absence de la SOURCE : tools/skills_sync.py ne seed que ce
+# qu'il DÉCOUVRE sous /opt/hermes/skills (aucun re-téléchargement, aucune
+# erreur — prouvé par tests/test_jb_skill_hermes_agent_absent.py). Reste la
+# phrase du prompt système qui pointe vers ce skill (agent/prompt_builder.py,
+# HERMES_AGENT_HELP_GUIDANCE, inconditionnelle) — fuite documentée, PR amont.
+RUN rm -rf /opt/hermes/skills/autonomous-ai-agents/hermes-agent
+
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no

@@ -4845,74 +4845,6 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
-def _jb_job_hooks():
-    """Pont OPTIONNEL vers le plugin jb_outbound (greffe Jean-Billie).
-
-    Expose au scheduler le contexte d'attribution (casquette/skill/job, lu ensuite par le
-    middleware du plugin) et les signaux début/fin de job. On résout le module DÉJÀ chargé —
-    le PluginManager importe les plugins sous ``hermes_plugins.<slug>`` ; jamais d'import à
-    froid : sans plugin chargé, renvoie ``None`` et le scheduler garde son comportement
-    d'origine (stock Hermes inchangé).
-    """
-    import importlib
-    for pkg in ("hermes_plugins.jb_outbound", "jb_outbound", "plugins.jb_outbound"):
-        if pkg in sys.modules:
-            try:
-                return importlib.import_module(pkg + ".job_context")
-            except Exception:
-                logger.debug("jb_outbound job_context unavailable", exc_info=True)
-                return None
-    return None
-
-
-def run_job(
-    job: dict,
-    *,
-    defer_agent_teardown: Optional[list] = None,
-    extra_prompt: Optional[str] = None,
-    cancel_event: Optional[_CancelEventLike] = None,
-) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job (greffe Jean-Billie : attribution + signaux d'activité).
-
-    Wrapper autour du ``run_job`` upstream (renommé ``_run_job_impl`` ci-dessous). TOUS les
-    paramètres nommés (``defer_agent_teardown``, ``extra_prompt``, ``cancel_event``) sont
-    transmis tels quels : les appelants amont les passent (cronjob(action='run', prompt=…),
-    fire-claim perdu) — en oublier un = TypeError au premier cron. Les hooks jb sont
-    best-effort, double-gardés :
-    ils ne doivent en AUCUN cas bloquer ni faire échouer le job. Sans plugin chargé :
-    comportement stock. Hunk cœur DÉCLARÉ (allowlist jb) : pas de hook cycle-de-vie cron natif
-    — candidat à une PR upstream ``pre/post_cron_job`` (décision différée post-F2).
-    """
-    jb_hooks = _jb_job_hooks()
-    if jb_hooks is None:
-        return _run_job_impl(
-            job,
-            defer_agent_teardown=defer_agent_teardown,
-            extra_prompt=extra_prompt,
-            cancel_event=cancel_event,
-        )
-    jb_token = None
-    try:
-        jb_token = jb_hooks.job_started(job)
-    except Exception:
-        logger.debug("jb_outbound job_started hook failed", exc_info=True)
-    success = False
-    try:
-        result = _run_job_impl(
-            job,
-            defer_agent_teardown=defer_agent_teardown,
-            extra_prompt=extra_prompt,
-            cancel_event=cancel_event,
-        )
-        success = bool(result and result[0])
-        return result
-    finally:
-        try:
-            jb_hooks.job_finished(job, success=success, token=jb_token)
-        except Exception:
-            logger.debug("jb_outbound job_finished hook failed", exc_info=True)
-
-
 def _guard_job_credential_exfil(job: dict) -> None:
     """Fail closed if a job's stored provider/base_url pair would exfiltrate a
     credential (F8 runtime backstop; CWE-200/CWE-522).
@@ -5433,10 +5365,7 @@ class _BoundedCronSessionDB:
         return _bounded
 
 
-# [jb] Le run_job upstream est renommé _run_job_impl : le wrapper run_job (ci-dessus,
-# hunk cœur déclaré) lui transmet TOUS ses paramètres nommés (defer_agent_teardown,
-# extra_prompt, cancel_event) — signature à tenir alignée à chaque refusion amont.
-def _run_job_impl(
+def run_job(
     job: dict,
     *,
     defer_agent_teardown: Optional[list] = None,

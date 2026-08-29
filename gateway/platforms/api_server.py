@@ -1538,13 +1538,12 @@ class APIServerAdapter(BasePlatformAdapter):
     def authorization_is_upstream(self) -> bool:
         return True
 
-    # Delivery on this adapter is the HTTP request/response cycle: there is no
-    # push channel and ``send()`` is a contractual failure (see below). Managed
-    # /goal status notices must not be attempted here — the co-located control
-    # daemon reads goal state over GET /v1/goals instead. Declaring the seam on
-    # the adapter (same pattern as ``authorization_is_upstream`` above) keeps
-    # gateway/run.py free of Platform.API_SERVER special-cases; the gateway
-    # checks it with ``getattr(adapter, "supports_push_send", True)``.
+    # [jb] Delivery on this adapter is the HTTP request/response cycle: there is
+    # no push channel. DOCUMENTATION seam only (F2, 2026-08-29): gateway/run.py
+    # no longer consults it — the silence of managed-mission pushes is obtained
+    # in ``send()`` below (silent success for conversations driven by the
+    # control daemon), so the gateway keeps zero Platform.API_SERVER
+    # special-cases. Kept as a stable, testable statement of the contract.
     @property
     def supports_push_send(self) -> bool:
         return False
@@ -1563,6 +1562,10 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        # [jb] conversationIds of managed missions armed through POST /v1/message on
+        # THIS process (positive cache for ``_is_managed_conversation``; the goal
+        # row keyed by the anchor is the durable truth after a restart).
+        self._jb_managed_conversations: set = set()
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -4466,6 +4469,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # Deterministic API_SERVER source → stable gateway session key across the kickoff turn and every
         # continuation turn (same SessionEntry reused). The goal is keyed by conversationId via the anchor,
         # independent of the session_id that compression rotates.
+        # The conversation is managed from here on: its synthetic pushes (status notices, final
+        # answers) are silent successes in ``send()`` — see ``_is_managed_conversation``.
+        self.__dict__.setdefault("_jb_managed_conversations", set()).add(conversation_id)
         from gateway.session import SessionSource
         source = SessionSource(
             platform=Platform.API_SERVER,
@@ -8996,8 +9002,49 @@ class APIServerAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """
         Not used — HTTP request/response cycle handles delivery directly.
+
+        [jb] Managed missions (conversations armed by the co-located control daemon
+        over POST /v1/message, see ``_is_managed_conversation``) are the ONE caller
+        family whose pushes land here: the gateway's synthetic sends for a
+        continuation turn (goal/loop status notice in ``_send_goal_status_notice``,
+        final-answer delivery through ``_send_with_retry``). None of them has a
+        channel to fail on — mission state and output are persisted and read over
+        GET /v1/goals + the session APIs — so they get a SILENT success, which is
+        what keeps gateway/run.py free of any Platform.API_SERVER special-case
+        (the upstream code logs "status send failed" WARNING per turn otherwise).
+        Every other caller keeps the contractual failure: a ``send_message`` tool
+        call aimed at this platform must never be reported as delivered.
         """
+        if self._is_managed_conversation(chat_id):
+            logger.debug("[%s] push send to managed mission %s: no push channel, state read over HTTP", self.name, chat_id)
+            return SendResult(success=True)
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+
+    def _is_managed_conversation(self, chat_id: Any) -> bool:
+        """[jb] True when ``chat_id`` is the conversationId of a managed mission.
+
+        Positive in-process cache first (filled by POST /v1/message), then the
+        durable truth: a goal row keyed by the anchor (``goal:<conversationId>``,
+        ``_goal_anchor_for_source`` in gateway/run.py) — so continuation turns
+        re-driven after a gateway restart (watchdog) are recognised too. Any
+        failure reads as "not managed" (contractual failure, never a silent lie).
+        """
+        cid = str(chat_id or "")
+        if not cid:
+            return False
+        # Lazy: tests build the adapter with ``__new__`` (no ``__init__``).
+        known = self.__dict__.setdefault("_jb_managed_conversations", set())
+        if cid in known:
+            return True
+        try:
+            from hermes_cli.goals import load_goal
+
+            if load_goal(cid) is None:
+                return False
+        except Exception:
+            return False
+        known.add(cid)
+        return True
 
     async def _send_with_retry(
         self,
@@ -9010,14 +9057,13 @@ class APIServerAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Short-circuit the base retry/fallback ladder on this push-less adapter.
 
-        ``send()`` is a contractual failure here (``supports_push_send`` is
-        False), so the base implementation would log a WARNING then attempt a
-        plain-text fallback and log an ERROR — one pair per managed-mission
-        turn (final-answer delivery, acks) — into errors.log, the cockpit's
-        log source. Same seam as the goal status notice guard: attempt once,
-        return the contractual failure unchanged, log at DEBUG only. Delivery
-        on this platform is the HTTP request/response cycle; mission output is
-        read over GET /v1/goals and the session APIs.
+        ``send()`` is a contractual failure here for anything that is not a
+        managed mission, so the base implementation would log a WARNING then
+        attempt a plain-text fallback and log an ERROR — one pair per turn —
+        into errors.log, the cockpit's log source. Attempt once, return the
+        result unchanged, log at DEBUG only. Delivery on this platform is the
+        HTTP request/response cycle; mission output is read over GET /v1/goals
+        and the session APIs.
         """
         result = await self.send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
         if not result.success:
