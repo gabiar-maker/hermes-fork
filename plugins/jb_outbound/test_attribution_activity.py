@@ -238,9 +238,9 @@ def test_scheduler_run_job_pose_contexte_et_signale(posts, tmp_path, monkeypatch
 
     seen = {}
 
-    def _fake_impl(job, defer_agent_teardown=False):
-        # `defer_agent_teardown` : kwarg upstream v0.18 (toujours passé par run_job) — accepté
-        # pour coller à la vraie signature de _run_job_impl, sans effet sur ce test.
+    def _fake_impl(job, *, defer_agent_teardown=None, extra_prompt=None, cancel_event=None):
+        # Signature upstream 0.20.6 de _run_job_impl (defer_agent_teardown, extra_prompt,
+        # cancel_event) — TOUS transmis par le wrapper run_job, sans effet sur ce test.
         seen["ctx"] = job_context.current()  # visible PENDANT l'exécution du job
         return True, "doc", "réponse", None
 
@@ -264,7 +264,7 @@ def test_scheduler_run_job_echec_signale_error(posts, tmp_path, monkeypatch):
     monkeypatch.setattr(
         scheduler,
         "_run_job_impl",
-        lambda job, defer_agent_teardown=False: (False, "doc", "", "boom"),
+        lambda job, **kwargs: (False, "doc", "", "boom"),
     )
     result = scheduler.run_job(_job())
 

@@ -1,0 +1,100 @@
+# ============================================================================
+# JB — Tests du fork sur runner STANDARD (fork-owned, sous label jb-core-approved)
+# ============================================================================
+# POURQUOI CE WORKFLOW EXISTE (2026-08-29, fusion v2026.8.27 / Hermes 0.20.6) :
+# la CI amont (`ci.yml` → `tests.yml`, `js-checks`, `rust`, `windows`) demande des
+# runners GitHub « larges » (`ubuntu-latest-96-core`, `ubuntu-latest-32-core`,
+# `windows-latest-32-core`) que ce dépôt ne possède pas : ses jobs restent EN FILE
+# pour toujours sur nos PR (constaté sur fork#32 : 4 jobs « queued » > 40 min).
+# Ce workflow est donc LE gate de tests du fork : la suite jb complète + les tests
+# amont des zones que nous patchons (registre : .github/jb-allowed-paths.txt).
+# La suite amont intégrale reste jouée par l'amont sur ses tags ; nous ne la
+# rejouons pas (pas de runner adapté). À CHAQUE REFUSION : relire la liste ci-dessous
+# (nouveaux tests jb, zones patchées) et vérifier que l'installation suit tests.yml.
+name: JB — Tests du fork (runner standard)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jb-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jb-tests:
+    name: jb-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies (mêmes extras que tests.yml amont)
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Suite jb (plugin, contrats, api_server, watchdog, fusion 0.20.6, veille, skill)
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q -p no:cacheprovider \
+            plugins/jb_outbound \
+            tests/plugins/test_jb_web_linkup.py \
+            tests/test_jb_guard_paths.py \
+            tests/test_jb_merge_0206.py \
+            tests/gateway/test_jb_contracts.py \
+            tests/gateway/test_managed_goal_arm.py \
+            tests/gateway/test_goal_status_notice.py \
+            tests/gateway/test_api_server_reply.py \
+            tests/gateway/test_api_server_goal_control.py \
+            tests/gateway/test_watchdog_and_clear.py \
+            tests/gateway/test_api_server_push_less_send.py \
+            tests/test_mcp_probe.py
+
+      - name: Zones amont patchées (api_server, cron, delegate, goals)
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q -p no:cacheprovider \
+            tests/gateway/test_api_server.py \
+            tests/gateway/test_api_server_toolset.py \
+            tests/gateway/test_api_server_runs.py \
+            tests/tools/test_delegate.py \
+            tests/agent/test_subagent_stop_hook.py \
+            tests/cron \
+            tests/gateway/test_goal_verdict_send.py \
+            tests/gateway/test_goal_continuation_drain.py \
+            tests/gateway/test_goal_resume_restart.py
+
+      - name: Lots F2 (présents seulement sur les branches qui les portent)
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          FILES=""
+          for f in tests/test_jb_skill_hermes_agent_absent.py tests/test_jb_upstream_watch.py; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+          if [ -n "$FILES" ]; then python -m pytest -q -p no:cacheprovider $FILES; else echo "aucun fichier F2 sur cette branche"; fi
