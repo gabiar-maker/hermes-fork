@@ -18,13 +18,37 @@ logger = logging.getLogger(__name__)
 
 def register(ctx) -> None:
     """Point d'entrée appelé par le PluginManager de Hermes au chargement."""
-    from . import listener, delegation_activity, produce, request_connection, web_linkup
+    from . import (
+        delegation_activity,
+        job_context,
+        listener,
+        mcp_probe,
+        produce,
+        request_connection,
+        web_linkup,
+    )
     from .middleware import make_middleware
 
     ctx.register_middleware("tool_execution", make_middleware())
     # Bus de délégation → fil d'activité (D2) + contributeurs du draft (D3). Hooks natifs, thread parent.
     ctx.register_hook("subagent_start", delegation_activity.on_subagent_start)
     ctx.register_hook("subagent_stop", delegation_activity.on_subagent_stop)
+    # Attribution des jobs cron (casquette/skill/job → stamp des drafts) + signaux début/fin du fil
+    # d'activité : hooks natifs de cycle de vie de session, filtrés sur platform == "cron" (F2,
+    # 2026-08-29 — remplace le wrapper run_job qui patchait cron/scheduler.py). Hooks BORNÉS du cœur
+    # (thread de travail, contexte copié) → registre par session dans job_context, pas de ContextVar.
+    ctx.register_hook("on_session_start", job_context.on_session_start)
+    ctx.register_hook("on_session_end", job_context.on_session_end)
+    # Sonde MCP read-only du fleet daemon : `hermes jb-mcp-probe --url … [--header …]`, sortie JSON
+    # identique à `hermes mcp probe` (hunk cœur hermes_cli/mcp_config.py + subcommands/mcp.py, en
+    # TRANSITION : le daemon Go bascule sur cette commande — lane D — puis le hunk cœur est retiré).
+    ctx.register_cli_command(
+        name=mcp_probe.COMMAND_NAME,
+        help=mcp_probe.COMMAND_HELP,
+        setup_fn=mcp_probe.setup_parser,
+        handler_fn=mcp_probe.run,
+        description=mcp_probe.COMMAND_DESCRIPTION,
+    )
     # Outil « creer_support » (Ma marque, Option A) : l'agent DÉCLENCHE la production d'un support
     # brandé via le daemon loopback (même chemin que les drafts) ; la plateforme rend le document
     # (gabarits fixes + charte) et le range dans les Documents du client. Toolset PLUGIN (activé par

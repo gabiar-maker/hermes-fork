@@ -268,6 +268,9 @@ def test_le_plugin_enregistre_bien_le_fournisseur():
         def register_web_search_provider(self, p):
             poses.append(p)
 
+        def register_cli_command(self, **kw):
+            pass
+
     jb_outbound.register(_Ctx())
     assert len(poses) == 1
     assert isinstance(poses[0], web_linkup.JbRelayWebSearchProvider)

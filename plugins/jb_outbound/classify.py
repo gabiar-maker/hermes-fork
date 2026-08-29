@@ -29,6 +29,13 @@ BLOCK = "block"      # fail-closed : refuser (envoi non répertorié)
 # Envois gateway directs.
 SEND_TOOLS = {"send_message"}
 
+# Plateformes SANS canal de livraison : `api_server` = cycle requête/réponse HTTP, son `send()` est un
+# échec contractuel. Un `send_message` qui la vise ne doit JAMAIS devenir une proposition : approuvée,
+# elle serait rejouée (replay.py → registry.dispatch → adapter.send()) et marquée « executed » alors
+# que RIEN n'a de canal — le client repartirait en croyant son message envoyé (relecture F2,
+# 2026-08-29). Défense en profondeur côté plugin : BLOQUÉ en amont, message white-label.
+NO_DELIVERY_PLATFORMS = frozenset({"api_server"})
+
 _COMPOSIO_PREFIX = "mcp__composio__"
 
 # Marqueurs d'ACTION dans le nom d'outil MCP (ex. mcp__composio__GMAIL_SEND_EMAIL).
@@ -48,6 +55,26 @@ _BROWSER_READ = {
     "browser_scroll",
     "browser_back",
 }
+
+
+def target_platform(args) -> str:
+    """Plateforme visée par un envoi gateway : préfixe de ``target`` (« plateforme:cible », contrat de
+    ``send_message``) ou clé ``platform`` explicite. Chaîne vide si indéterminable."""
+    args = args if isinstance(args, dict) else {}
+    target = args.get("target")
+    if isinstance(target, str) and target.strip():
+        return target.split(":", 1)[0].strip().lower()
+    platform = args.get("platform")
+    if isinstance(platform, str):
+        return platform.strip().lower()
+    return ""
+
+
+def has_no_delivery_channel(tool_name: str, args) -> bool:
+    """Vrai pour un envoi gateway (``SEND_TOOLS``) dont la plateforme n'a aucun canal de livraison."""
+    if (tool_name or "") not in SEND_TOOLS:
+        return False
+    return target_platform(args) in NO_DELIVERY_PLATFORMS
 
 
 def classify(tool_name: str) -> str:

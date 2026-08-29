@@ -32,8 +32,10 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("JB_DECISION_PUSH_URL", raising=False)
     monkeypatch.delenv("JB_ACTIVITY_EVENTS", raising=False)
-    job_context._JOB_CTX.set(None)
+    job_context._reset_for_tests()
     contributions.reset()
+    yield
+    job_context._reset_for_tests()
 
 
 @pytest.fixture
@@ -62,13 +64,23 @@ def _write_skill(tmp_path, name, body):
     (d / "SKILL.md").write_text(body, encoding="utf-8")
 
 
-def _propose(tool="send_message", args=None):
+_SID = "cron_j1_20260829_070000"
+
+
+def _start_job(monkeypatch, job: dict, session_id: str = _SID) -> None:
+    """Le cœur ouvre la session cron du job (hook natif on_session_start, store cron simulé)."""
+    monkeypatch.setattr(job_context, "_load_job", lambda job_id: job if job_id == job["id"] else None)
+    job_context.on_session_start(session_id=session_id, model="m", platform="cron")
+
+
+def _propose(tool="send_message", args=None, session_id=_SID):
     def next_call(_a):
         raise AssertionError("l'outil d'envoi NE doit PAS s'exécuter avant validation")
 
     return json.loads(
         middleware.make_middleware()(
-            tool_name=tool, args=args or {"chat_id": "1", "content": "Hi"}, next_call=next_call
+            tool_name=tool, args=args or {"chat_id": "1", "content": "Hi"}, next_call=next_call,
+            session_id=session_id,
         )
     )
 
@@ -114,9 +126,9 @@ def test_gate_off_pas_activite_mais_contributeur_enregistre(posts):
 
 # --------------------------- D3 : contributeurs du draft ---------------------------
 
-def test_draft_contributors_lead_plus_support(posts, tmp_path):
+def test_draft_contributors_lead_plus_support(posts, tmp_path, monkeypatch):
     _write_skill(tmp_path, "relance-devis", "---\nname: relance-devis\ncasquette: commercial\n---\n")
-    token = job_context.job_started({"id": "j1", "name": "Relances", "skills": ["relance-devis"]})
+    _start_job(monkeypatch, {"id": "j1", "name": "Relances", "skills": ["relance-devis"]})
     da.on_subagent_start(child_subagent_id="sa-0", child_department="comptable")  # une délégation a contribué
     _propose()
     draft = _drafts(posts)[-1]
@@ -128,15 +140,13 @@ def test_draft_contributors_lead_plus_support(posts, tmp_path):
     # reset : un 2e envoi sans nouvelle délégation → plus de contributors (lead seul < 2)
     _propose()
     assert "contributors" not in _drafts(posts)[-1]
-    job_context.job_finished({"id": "j1"}, token=token)
 
 
-def test_draft_mono_casquette_pas_de_contributors(posts, tmp_path):
+def test_draft_mono_casquette_pas_de_contributors(posts, tmp_path, monkeypatch):
     _write_skill(tmp_path, "relance-devis", "---\ncasquette: commercial\n---\n")
-    token = job_context.job_started({"id": "j1", "skills": ["relance-devis"]})
+    _start_job(monkeypatch, {"id": "j1", "skills": ["relance-devis"]})
     _propose()  # aucune délégation
     assert "contributors" not in _drafts(posts)[-1]
-    job_context.job_finished({"id": "j1"}, token=token)
 
 
 def test_chat_libre_promotion_premier_support_en_lead(posts):
@@ -156,6 +166,7 @@ def test_cron_event_porte_correlation_id_egal_job_id(posts, tmp_path, monkeypatc
     monkeypatch.setenv("JB_ACTIVITY_EVENTS", "1")
     _write_skill(tmp_path, "relance-devis", "---\ncasquette: commercial\n---\n")
     job = {"id": "job-42", "name": "Relances", "skills": ["relance-devis"]}
-    token = job_context.job_started(job)
-    job_context.job_finished(job, token=token)
+    sid = "cron_job-42_20260829_070000"
+    _start_job(monkeypatch, job, session_id=sid)
+    job_context.on_session_end(session_id=sid, platform="cron", completed=True, failed=False, interrupted=False)
     assert [e["correlation_id"] for e in _activities(posts)] == ["job-42", "job-42"]

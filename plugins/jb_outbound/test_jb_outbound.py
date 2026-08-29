@@ -137,6 +137,15 @@ def test_mapping_telegram():
     assert d["to"] == "123"
 
 
+def test_mapping_send_message_target_renseigne_le_destinataire():
+    """`target` (« plateforme:cible ») est la clé RÉELLE de send_message : le champ « à » n'est plus vide."""
+    d = mapping.to_draft("send_message", {"target": "telegram:123", "message": "Salut"})
+    assert d["kind"] == "sms"
+    assert d["to"] == "telegram:123"
+    assert d["title"] == "Message à telegram:123"
+    assert "Salut" in d["preview"]
+
+
 def test_middleware_pass_through_un_outil_interne(posts):
     seen = {}
 
@@ -171,6 +180,46 @@ def test_middleware_propose_court_circuite_et_depose(posts):
     rec = store.load(jb_id)
     assert rec["status"] == "pending"
     assert rec["args"] == {"chat_id": "1", "content": "Hi"}  # args complets gardés localement
+
+
+def test_classify_destination_sans_canal_de_livraison():
+    assert classify.has_no_delivery_channel("send_message", {"target": "api_server:mission:42"}) is True
+    assert classify.has_no_delivery_channel("send_message", {"target": " API_SERVER : x"}) is True
+    assert classify.has_no_delivery_channel("send_message", {"platform": "api_server", "chat_id": "m"}) is True
+    assert classify.has_no_delivery_channel("send_message", {"target": "telegram:123"}) is False
+    assert classify.has_no_delivery_channel("send_message", {"chat_id": "123"}) is False  # cible indéterminée
+    assert classify.has_no_delivery_channel("send_message", None) is False
+    # Seuls les envois gateway sont concernés : un outil composio n'a pas de `target` de plateforme.
+    assert classify.has_no_delivery_channel("mcp__composio__GMAIL_SEND_EMAIL", {"target": "api_server:x"}) is False
+
+
+def test_send_message_vers_api_server_bloque_jamais_propose(posts):
+    """Défense en profondeur (relecture F2, 2026-08-29) : api_server n'a AUCUN canal de livraison.
+
+    Proposée puis approuvée, la demande serait rejouée (replay.py → registry.dispatch →
+    adapter.send()) et marquée « executed » sans que rien ne parte. Elle est donc BLOQUÉE en amont,
+    avec un message white-label — jamais déposée. Contrôle positif : une cible telegram reste proposée.
+    """
+    def next_call(_a):
+        raise AssertionError("un envoi sans canal de livraison NE doit PAS s'exécuter")
+
+    for args in (
+        {"target": "api_server:mission:42", "message": "Hi"},
+        {"target": " API_SERVER : mission:42", "message": "Hi"},
+        {"platform": "api_server", "chat_id": "mission:42", "content": "Hi"},
+    ):
+        out = json.loads(middleware.make_middleware()(tool_name="send_message", args=args, next_call=next_call))
+        assert out["status"] == "blocked", args
+        assert out["message"] == "Cette destination n'a pas de canal d'envoi. Rien n'a été envoyé."
+    assert posts == []  # aucune proposition déposée, rien dans le store
+
+    out = json.loads(
+        middleware.make_middleware()(
+            tool_name="send_message", args={"target": "telegram:123", "message": "Hi"}, next_call=next_call
+        )
+    )
+    assert out["status"] == "queued_for_approval"
+    assert len(posts) == 1 and posts[0][1]["to"] == "telegram:123"
 
 
 def test_middleware_block_fail_closed(posts):

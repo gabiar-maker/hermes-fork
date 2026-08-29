@@ -3,8 +3,9 @@
 Chaque test pince UN hunk de la dette cœur dont l'oubli au rebase casse la box en
 SILENCE (rapport S1, base de contexte « Upstream Hermes 0.20 », 2026-08-28) :
 
-* H3  cron/scheduler.py     — le wrapper ``run_job`` doit transmettre TOUS les kwargs
-                              amont à ``_run_job_impl`` (sinon TypeError au 1er cron).
+* H3  cron/scheduler.py     — RÉSORBÉ (F2, 2026-08-29) : plus de wrapper ``run_job`` ; le
+                              fichier doit rester BYTE-IDENTIQUE au tag amont (l'attribution
+                              cron vit dans le plugin via on_session_start/on_session_end).
 * H6  api_server.py         — ``_create_agent(stateless=True)`` = ``session_db=None`` +
                               ``skip_memory=True`` (sinon /v1/reply lit/écrit la mémoire
                               du client pour un TIERS).
@@ -36,77 +37,82 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ──────────────────────────────────────────────────────────────────────
-# H3 — wrapper run_job (cron/scheduler.py)
+# H3 — cron/scheduler.py est REDEVENU amont (F2) : aucun patch jb ne doit y revenir
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestRunJobWrapperForwardsUpstreamKwargs:
-    def test_signature_of_wrapper_covers_the_upstream_impl(self):
-        """Piège de refusion : si l'amont ajoute un kwarg à run_job, le wrapper doit le porter."""
+UPSTREAM_TAG = "v2026.8.27"
+
+
+class TestCronSchedulerIsUpstream:
+    def test_no_jb_marker_in_scheduler(self):
+        """Piège de refusion (sans dépendre du tag git) : aucune trace du wrapper résorbé."""
+        text = (REPO_ROOT / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        for marker in ("_jb_job_hooks", "_run_job_impl", "jb_outbound", "job_context", "[jb]"):
+            assert marker not in text, f"marqueur jb réintroduit dans cron/scheduler.py : {marker}"
         import cron.scheduler as scheduler
 
-        wrapper = inspect.signature(scheduler.run_job).parameters
-        impl = inspect.signature(scheduler._run_job_impl).parameters
-        assert set(impl) <= set(wrapper), (
-            f"kwargs amont absents du wrapper run_job : {sorted(set(impl) - set(wrapper))}"
+        assert not hasattr(scheduler, "_run_job_impl")
+        assert not hasattr(scheduler, "_jb_job_hooks")
+
+    def test_scheduler_is_byte_identical_to_upstream_tag(self):
+        """Critère de réussite du lot F2-1 : `git diff v2026.8.27 -- cron/scheduler.py` vide.
+
+        Skippé (pas un échec) quand le tag n'est pas résolvable (checkout CI peu profond) : le test
+        précédent et le garde-fou d'allowlist (jb-guard.yml) restent les gardes en CI.
+        """
+        import subprocess
+
+        probe = subprocess.run(
+            ["git", "rev-parse", "-q", "--verify", f"{UPSTREAM_TAG}^{{commit}}"],
+            cwd=REPO_ROOT, capture_output=True, text=True,
         )
-        for name in ("extra_prompt", "cancel_event", "defer_agent_teardown"):
-            assert name in wrapper
-            assert wrapper[name].kind is inspect.Parameter.KEYWORD_ONLY
+        if probe.returncode != 0:
+            pytest.skip(f"tag {UPSTREAM_TAG} indisponible dans ce checkout")
+        upstream = subprocess.run(
+            ["git", "show", f"{UPSTREAM_TAG}:cron/scheduler.py"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout.replace(b"\r\n", b"\n")
+        local = (REPO_ROOT / "cron" / "scheduler.py").read_bytes().replace(b"\r\n", b"\n")
+        assert local == upstream, "cron/scheduler.py diverge du tag amont : dette cœur réintroduite"
 
-    def test_stock_path_forwards_extra_prompt_and_cancel_event(self, monkeypatch):
-        """Sans plugin chargé (chemin stock), les kwargs traversent tels quels."""
-        import cron.scheduler as scheduler
+    def test_plugin_registers_the_native_session_hooks(self):
+        """Le remplaçant du wrapper : on_session_start/on_session_end (hooks VALID_HOOKS, bornés)."""
+        import sys
 
-        seen: dict = {}
+        from hermes_cli.plugins import VALID_HOOKS, _HOOK_TIMEOUT_BOUNDED_HOOKS
 
-        def _fake_impl(job, **kwargs):
-            seen.update(kwargs)
-            return True, "doc", "réponse", None
+        plugins_dir = REPO_ROOT / "plugins"
+        if str(plugins_dir) not in sys.path:
+            sys.path.insert(0, str(plugins_dir))
+        import jb_outbound
 
-        monkeypatch.setattr(scheduler, "_run_job_impl", _fake_impl)
-        monkeypatch.setattr(scheduler, "_jb_job_hooks", lambda: None)
+        hooks: dict = {}
 
-        holder: list = []
-        cancel = threading.Event()
-        result = scheduler.run_job(
-            {"id": "j1", "name": "relance"},
-            defer_agent_teardown=holder,
-            extra_prompt="contexte du run",
-            cancel_event=cancel,
-        )
+        class _Ctx:
+            def register_middleware(self, *a, **k):
+                pass
 
-        assert result == (True, "doc", "réponse", None)
-        assert seen["defer_agent_teardown"] is holder
-        assert seen["extra_prompt"] == "contexte du run"
-        assert seen["cancel_event"] is cancel
+            def register_tool(self, **kw):
+                pass
 
-    def test_hooked_path_forwards_extra_prompt_and_cancel_event(self, monkeypatch):
-        """Avec le pont jb (job_started/job_finished), même transmission — 2e site d'appel."""
-        import cron.scheduler as scheduler
+            def register_auxiliary_task(self, *a, **k):
+                pass
 
-        seen: dict = {}
-        calls: list = []
+            def register_web_search_provider(self, *a, **k):
+                pass
 
-        def _fake_impl(job, **kwargs):
-            seen.update(kwargs)
-            return False, "doc", "", "boom"
+            def register_cli_command(self, **kw):
+                pass
 
-        hooks = SimpleNamespace(
-            job_started=lambda job: calls.append(("started", job["id"])) or "tok",
-            job_finished=lambda job, *, success, token: calls.append(("finished", success, token)),
-        )
-        monkeypatch.setattr(scheduler, "_run_job_impl", _fake_impl)
-        monkeypatch.setattr(scheduler, "_jb_job_hooks", lambda: hooks)
+            def register_hook(self, name, cb):
+                hooks[name] = cb
 
-        cancel = threading.Event()
-        result = scheduler.run_job({"id": "j2"}, extra_prompt="x", cancel_event=cancel)
-
-        assert result[0] is False
-        assert seen["extra_prompt"] == "x"
-        assert seen["cancel_event"] is cancel
-        assert seen["defer_agent_teardown"] is None
-        assert calls == [("started", "j2"), ("finished", False, "tok")]
+        jb_outbound.register(_Ctx())
+        assert {"on_session_start", "on_session_end"} <= set(hooks)
+        assert {"on_session_start", "on_session_end"} <= VALID_HOOKS
+        # Hooks BORNÉS = thread de travail + contexte copié : la raison du registre par session.
+        assert {"on_session_start", "on_session_end"} <= _HOOK_TIMEOUT_BOUNDED_HOOKS
 
 
 # ──────────────────────────────────────────────────────────────────────

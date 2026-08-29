@@ -47,15 +47,29 @@ def _blocked_on_internal_failure() -> str:
     )
 
 
-def _decide(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+def _decide(
+    tool_name: str,
+    args: Dict[str, Any],
+    session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+) -> Optional[str]:
     """Décide du sort d'un appel d'outil.
 
     Retourne `None` pour laisser l'outil s'exécuter (pass-through : plugin passif, lecture, outil
     hors périmètre), sinon la CHAÎNE JSON à rendre au modèle à la place de l'exécution (proposition
     déposée, envoi bloqué, dépôt impossible). N'appelle JAMAIS l'outil : c'est l'appelant qui
     décide de faire suivre à `next_call`, et seulement sur `None`.
+
+    `session_id` / `turn_id` viennent du cœur (contexte du middleware `tool_execution`) : ils
+    servent à retrouver l'attribution du job cron courant (`job_context`, registre par session) et à
+    poser l'alias `turn_id → session_id` qui survit à la rotation de session à la compression.
     """
     from . import classify, config, contributions, http_client, job_context, mapping, store
+
+    # Alias de tour AVANT tout : à poser dès le premier appel d'outil (lecture comprise), y compris
+    # quand seul le fil d'activité est actif — c'est lui qui permet à `on_session_end` de retrouver le
+    # job après une rotation de session. O(1), n'échoue jamais.
+    job_context.bind_turn(session_id, turn_id)
 
     # Plugin passif hors box Jean-Billie (JB_DECISION_PUSH_URL non posé) : ne rien changer.
     if not config.enabled():
@@ -78,6 +92,17 @@ def _decide(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
             }
         )
 
+    # Destination SANS canal de livraison (api_server) : bloqué, jamais proposé — une proposition
+    # approuvée serait rejouée et marquée « executed » sans que rien ne parte (cf. classify.py).
+    if classify.has_no_delivery_channel(tool_name, args):
+        logger.warning("jb_outbound: envoi vers une destination sans canal de livraison BLOQUÉ : %s", tool_name)
+        return _result(
+            {
+                "status": "blocked",
+                "message": "Cette destination n'a pas de canal d'envoi. Rien n'a été envoyé.",
+            }
+        )
+
     # PROPOSE : court-circuit → proposition.
     jb_id = uuid.uuid4().hex
     draft = mapping.to_draft(tool_name, args)
@@ -91,7 +116,7 @@ def _decide(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
     # Attribution : si l'interception a lieu pendant un job cron (skill → casquette), le draft
     # porte le département. Champs ADDITIFS, omis hors contexte job (chat libre) — le daemon Go
     # actuel ignore les champs inconnus (contrat répliqué côté Go en vague 2).
-    ctx = job_context.current() or {}
+    ctx = job_context.current(session_id, turn_id) or {}
     for key in ("department", "skill_id", "job_id"):
         value = ctx.get(key)
         if value:
@@ -145,10 +170,12 @@ def make_middleware() -> Callable[..., Any]:
         tool_name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None,
         next_call: Callable[[Any], Any],
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
         **_: Any,
     ) -> Any:
         try:
-            outcome = _decide(tool_name or "", args or {})
+            outcome = _decide(tool_name or "", args or {}, session_id=session_id, turn_id=turn_id)
         except Exception as exc:
             # FAIL-CLOSED : sans ce filet, le cœur exécuterait l'outil (fail-open) et l'envoi
             # partirait. On journalise le type seulement — jamais les arguments (contenu du client).
