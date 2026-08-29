@@ -167,6 +167,17 @@
 #                         goal_judge est natif en 0.20.6 : candidat −1 register)
 #   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ, F2)
 #
+# ----------------------------------------------------------------------------
+# PIÈGE DE REFUSION n°6 (2026-08-29, v2026.8.27) — LA CI AMONT N EST PLUS JOUABLE SUR CE DÉPÔT.
+#   ci.yml → tests.yml / js-checks / rust / windows demandent des runners GitHub « larges »
+#   (ubuntu-latest-96-core, ubuntu-latest-32-core, windows-latest-32-core) que le fork ne
+#   possède pas : leurs jobs restent « queued » pour toujours (fork#32 : 4 jobs > 40 min).
+#   Gate de tests du fork = .github/workflows/jb-tests.yml (jb-owned, sous label, runner
+#   standard) : suite jb + tests amont des zones patchées. À rendre REQUIS (branch
+#   protection, check « jb-tests ») et à relire à chaque refusion (liste des fichiers,
+#   extras d installation alignés sur tests.yml). La suite amont intégrale est jouée par
+#   l amont sur ses tags ; nous ne la rejouons pas.
+#
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
 # matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes
 # vides et lignes « # » ignorées.
