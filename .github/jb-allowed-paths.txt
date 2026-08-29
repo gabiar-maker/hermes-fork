@@ -223,7 +223,6 @@
 #                         goal_judge est natif en 0.20.6 : candidat −1 register)
 #   imports cœur→plugin  (throttle « turns » du watchdog SUPPRIMÉ, F2)
 #
-<<<<<<< HEAD
 # PR AMONT PROPOSÉES (titre → effet) :
 #   1. « gateway: on_gateway_tick observer hook from _session_stall_watcher »
 #      → notre _watchdog_sweep devient un hook plugin, dette run.py = 0.
@@ -236,7 +235,7 @@
 #      (lot F2-2 abandonné : pas de succès factice côté adaptateur).
 #   5. « mcp: `hermes mcp test --url` ad hoc (read-only JSON) » → retire notre
 #      sonde une fois le daemon basculé (ou la commande plugin suffit).
-=======
+#
 # ----------------------------------------------------------------------------
 # PIÈGE DE REFUSION n°6 (2026-08-29, v2026.8.27) — LA CI AMONT N EST PLUS JOUABLE SUR CE DÉPÔT.
 #   ci.yml → tests.yml / js-checks / rust / windows demandent des runners GitHub « larges »
@@ -247,7 +246,6 @@
 #   protection, check « jb-tests ») et à relire à chaque refusion (liste des fichiers,
 #   extras d installation alignés sur tests.yml). La suite amont intégrale est jouée par
 #   l amont sur ses tags ; nous ne la rejouons pas.
->>>>>>> feat/jb-rebase-v0.20.6
 #
 # Syntaxe : un glob par ligne. « ** » traverse les répertoires (« a/**/b »
 # matche aussi « a/b ») ; « * » et « ? » restent dans un segment. Lignes
